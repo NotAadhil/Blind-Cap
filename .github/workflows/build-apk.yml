@@ -47,11 +47,11 @@ jobs:
         continue-on-error: true
         if: startsWith(github.ref, 'refs/heads/main')
         with:
-          tag_name: latest-apk
-          name: Blind Cap Android App
+          tag_name: v1.0.${{ github.run_number }}
+          name: Blind Cap Mobile App v1.0.${{ github.run_number }}
           body: |
-            ## Blind Cap Mobile Android App (1-Click Install APK)
-            Download the `app-debug.apk` file below and install it directly onto your Android smartphone.
+            ## Blind Cap Mobile Android App (Latest Build #${{ github.run_number }})
+            Download the `app-debug.apk` below for 1-click installation on Android.
           files: |
             android_app/app/build/outputs/apk/debug/app-debug.apk
         env:
