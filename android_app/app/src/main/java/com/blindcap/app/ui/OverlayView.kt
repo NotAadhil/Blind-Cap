@@ -1,4 +1,4 @@
-﻿package com.blindcap.app.ui
+package com.blindcap.app.ui
 
 import android.content.Context
 import android.graphics.Canvas
@@ -11,6 +11,7 @@ import androidx.core.content.ContextCompat
 import com.blindcap.app.R
 import com.blindcap.app.ai.Detection
 import com.blindcap.app.engine.HazardEvent
+import kotlin.math.max
 
 class OverlayView @JvmOverloads constructor(
     context: Context,

@@ -1,4 +1,4 @@
-﻿package com.blindcap.app.ocr
+package com.blindcap.app.ocr
 
 import android.graphics.Bitmap
 import android.util.Log
@@ -6,9 +6,9 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCancellableCoroutine
 
 class OcrManager {
 
@@ -17,7 +17,7 @@ class OcrManager {
 
     suspend fun extractText(bitmap: Bitmap): String = withContext(Dispatchers.Default) {
         val inputImage = InputImage.fromBitmap(bitmap, 0)
-        suspendCancellableCoroutine { continuation ->
+        suspendCancellableCoroutine<String> { continuation ->
             recognizer.process(inputImage)
                 .addOnSuccessListener { visionText ->
                     val cleanText = visionText.text.trim()
