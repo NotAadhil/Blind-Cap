@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/*.log
+logs/*.log.*
+
+# Model weights & binary files
+*.pt
+*.onnx
+models/**/*.bin
+models/**/*.xml
+models/**/*.yaml
+
+# Export staging directories
+yolo*_openvino_model/
+
+# Pytest & Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS & Temp
+Thumbs.db
+.DS_Store
+*.tmp

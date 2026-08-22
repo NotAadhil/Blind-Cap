@@ -1,0 +1,17 @@
+# ===========================================================
+# Blind Cap - Runtime Dependencies
+# ===========================================================
+openvino>=2024.0.0
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+pyttsx3>=2.90
+numpy>=1.24.0
+pyyaml>=6.0
+
+# Windows COM support (needed for SAPI5 TTS in threads)
+pywin32>=306
+
+# ===========================================================
+# Development / Testing (optional)
+# ===========================================================
+pytest>=7.0.0
