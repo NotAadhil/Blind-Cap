@@ -6,7 +6,6 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 
 data class SpeechMessage(
     val priority: Int, // Higher number = higher urgency
@@ -29,6 +28,9 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     private var lastSpokenTime: Long = 0L
 
     var isSpeaking: Boolean = false
+        private set
+
+    var isOcrActive: Boolean = false
         private set
 
     var isMuted: Boolean = false
@@ -75,10 +77,11 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     @Synchronized
     private fun handleSpeechFinished() {
         isSpeaking = false
+        isOcrActive = false
         currentlySpeakingText = null
         currentPriority = 0
 
-        // Check if there is a pending fresh message
+        // Check if there is a pending fresh message (non-stale)
         val next = pendingMessage
         pendingMessage = null
 
@@ -92,6 +95,28 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
         }
     }
 
+    /**
+     * Dedicated method for user-requested OCR reading that locks priority and protects against background detection interruptions.
+     */
+    @Synchronized
+    fun startOcrReading(ocrText: String) {
+        if (isMuted || !isInitialized) return
+        val trimmed = ocrText.trim()
+        if (trimmed.isEmpty()) return
+
+        Log.i(tag, "Starting active OCR reading task: $trimmed")
+        isOcrActive = true
+        pendingMessage = null
+
+        // Stop any background speech immediately and start OCR
+        tts?.stop()
+        isSpeaking = false
+        currentPriority = 85 // OCR priority above routine detections (50-70)
+
+        val msg = SpeechMessage(priority = 85, text = trimmed, severity = "INFO", maxAgeMs = 10000L)
+        executeSpeech(msg)
+    }
+
     @Synchronized
     fun speak(text: String, priority: Int, severity: String) {
         if (isMuted || !isInitialized) return
@@ -100,9 +125,21 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
 
-        // Deduplication: Do not repeat identical speech if currently playing or played within last 2.5 seconds
+        // 1. OCR Protection: If OCR is actively being read, do NOT let routine background detections interrupt or queue!
+        if (isOcrActive) {
+            if (priority < 90) {
+                // Background detections (priority 40..70) are silently suppressed during OCR reading
+                return
+            } else {
+                // Only critical collision danger (priority 90+) can interrupt OCR
+                Log.w(tag, "Critical hazard preemption during OCR: $trimmed")
+                isOcrActive = false
+            }
+        }
+
+        // Deduplication: Do not repeat identical speech if currently playing or played within last 3 seconds
         val now = SystemClock.elapsedRealtime()
-        if (trimmed == currentlySpeakingText && (now - lastSpokenTime < 2500L)) {
+        if (trimmed == currentlySpeakingText && (now - lastSpokenTime < 3000L)) {
             return
         }
 
@@ -112,9 +149,9 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
             lastImportantWarning = trimmed
         }
 
-        // 1. Instant Preemption: If higher priority (or urgent danger), cut off current speech immediately!
+        // 2. Instant Preemption: If higher priority, cut off current speech immediately
         if (isSpeaking && priority > currentPriority) {
-            Log.i(tag, "Preempting lower priority speech for: $trimmed")
+            Log.i(tag, "Preempting lower priority speech (${currentPriority} -> ${priority}) for: $trimmed")
             pendingMessage = null
             tts?.stop()
             isSpeaking = false
@@ -123,11 +160,11 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
             return
         }
 
-        // 2. If idle, speak immediately
+        // 3. If idle, speak immediately
         if (!isSpeaking) {
             executeSpeech(msg)
         } else {
-            // 3. Stale queue prevention: Replace any pending message with only the newest message
+            // 4. Stale queue prevention: Replace pending slot with only the freshest message
             pendingMessage = msg
         }
     }
@@ -151,6 +188,7 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
 
     fun stop() {
         pendingMessage = null
+        isOcrActive = false
         tts?.stop()
         isSpeaking = false
         currentlySpeakingText = null

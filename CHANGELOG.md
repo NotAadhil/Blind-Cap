@@ -4,6 +4,32 @@ All notable changes, bug fixes, performance improvements, and architectural evol
 
 ---
 
+## [v1.0.18] - 2026-08-22
+
+### Summary
+OCR Task Priority Protection & Persistent Person Tracking Across Camera Movements.
+
+### Bugs Identified & Addressed
+- **OCR Interruption by Background Detections**: When reading text aloud via OCR, ordinary background detections (e.g., a person standing in the room) would immediately interrupt and kill the OCR speech.
+- **Repeated Person Announcements on Camera Movement**: Slight panning or movement of the camera caused a tracked person's bounding box or region to shift slightly, triggering repetitive `"Person detected"` announcements.
+
+### Fixes & Architectural Enhancements
+- **OCR Task Priority Protection (`startOcrReading`)**:
+  - Sets OCR reading task priority to `85`.
+  - Background object detections (`priority <= 70`) are **completely suppressed** while OCR is actively reading.
+  - Only genuine critical collision hazards (`priority >= 90`, e.g. obstacle `<= 0.9m` in walking path) can preempt OCR.
+  - No background announcements accumulate behind OCR.
+- **Track-Level Identity Memory (`isAnnounced`)**:
+  - Each tracked physical object maintains an announcement memory flag.
+  - Once a person is confirmed and announced, camera movement, panning, bounding-box shifts, distance changes, or confidence fluctuations will **never re-trigger announcements**.
+  - New announcements are strictly reserved for genuinely new tracks (e.g. a second person entering) or danger corridor entries.
+- **Region Hysteresis Deadband**:
+  - Added a 6% frame width deadband to region boundaries in `DepthEstimator.kt`, preventing region flapping when panning.
+- **Extended Coasting Grace Period**:
+  - Increased track coasting tolerance to 20 frames (~1.5s) to seamlessly survive temporary detection dropouts or camera blurs.
+
+---
+
 ## [v1.0.17] - 2026-08-22
 
 ### Summary

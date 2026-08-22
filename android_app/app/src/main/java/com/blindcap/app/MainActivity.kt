@@ -451,7 +451,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val resultText = ocrManager.extractText(bitmap)
             withContext(Dispatchers.Main) {
-                ttsManager.speak(resultText, priority = 75, severity = "INFO")
+                ttsManager.startOcrReading(resultText)
                 Toast.makeText(this@MainActivity, resultText, Toast.LENGTH_LONG).show()
             }
         }

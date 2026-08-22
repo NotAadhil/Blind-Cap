@@ -1,6 +1,5 @@
-﻿package com.blindcap.app.engine
+package com.blindcap.app.engine
 
-import com.blindcap.app.ai.Detection
 import kotlin.math.max
 
 class DepthEstimator {
@@ -57,12 +56,25 @@ class DepthEstimator {
     }
 
     /**
-     * Classify horizontal region into Left, Center (Walking Path), or Right.
+     * Classify horizontal region with deadband hysteresis to prevent boundary flickering.
      */
-    fun classifyRegion(cxNorm: Float, leftRatio: Float = 0.35f, rightRatio: Float = 0.65f): String {
-        return when {
-            cxNorm < leftRatio -> "left"
-            cxNorm > rightRatio -> "right"
+    fun classifyRegion(cxNorm: Float, currentRegion: String? = null): String {
+        if (currentRegion == null) {
+            return when {
+                cxNorm < 0.35f -> "left"
+                cxNorm > 0.65f -> "right"
+                else -> "center"
+            }
+        }
+        // Hysteresis deadband: prevents jitter when panning or holding camera near boundaries
+        return when (currentRegion) {
+            "left" -> if (cxNorm > 0.42f) "center" else "left"
+            "right" -> if (cxNorm < 0.58f) "center" else "right"
+            "center" -> when {
+                cxNorm < 0.28f -> "left"
+                cxNorm > 0.72f -> "right"
+                else -> "center"
+            }
             else -> "center"
         }
     }
