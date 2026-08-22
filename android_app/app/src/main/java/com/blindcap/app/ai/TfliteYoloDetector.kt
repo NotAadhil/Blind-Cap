@@ -1,4 +1,4 @@
-﻿package com.blindcap.app.ai
+package com.blindcap.app.ai
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -139,6 +139,61 @@ class TfliteYoloDetector(
                         className = rawClassName,
                         classId = classId,
                         confidence = score,
+                        bbox = rect,
+                        center = Pair(cx, cy),
+                        areaRatio = areaRatio,
+                        region = region,
+                        estimatedDistanceM = distance
+                    )
+                )
+            }
+            detections.addAll(applyClassAwareNms(rawDetections))
+        } else if (outputShape.size == 3 && outputShape[1] >= 84) {
+            // Format B: Anchor Grid [1, 84, N] (cx, cy, w, h, class_probs[80])
+            val numAnchors = outputShape[2]
+            val outputBuffer = Array(1) { Array(outputShape[1]) { FloatArray(numAnchors) } }
+            tflite.run(processedImage.buffer, outputBuffer)
+
+            val rawDetections = mutableListOf<Detection>()
+            for (col in 0 until numAnchors) {
+                var maxScore = 0f
+                var bestClassId = -1
+
+                for (c in 4 until outputShape[1]) {
+                    val score = outputBuffer[0][c][col]
+                    if (score > maxScore) {
+                        maxScore = score
+                        bestClassId = c - 4
+                    }
+                }
+
+                if (maxScore < confThreshold || bestClassId < 0) continue
+
+                val cxPx = outputBuffer[0][0][col]
+                val cyPx = outputBuffer[0][1][col]
+                val wPx = outputBuffer[0][2][col]
+                val hPx = outputBuffer[0][3][col]
+
+                val x1Norm = ((cxPx - wPx / 2f) / inputSize).coerceIn(0f, 1f)
+                val y1Norm = ((cyPx - hPx / 2f) / inputSize).coerceIn(0f, 1f)
+                val x2Norm = ((cxPx + wPx / 2f) / inputSize).coerceIn(0f, 1f)
+                val y2Norm = ((cyPx + hPx / 2f) / inputSize).coerceIn(0f, 1f)
+
+                if (x2Norm <= x1Norm || y2Norm <= y1Norm) continue
+
+                val rawClassName = labels.getOrElse(bestClassId) { "object" }
+                val rect = RectF(x1Norm, y1Norm, x2Norm, y2Norm)
+                val cx = (x1Norm + x2Norm) / 2f
+                val cy = (y1Norm + y2Norm) / 2f
+                val areaRatio = (x2Norm - x1Norm) * (y2Norm - y1Norm)
+                val region = depthEstimator.classifyRegion(cx)
+                val distance = depthEstimator.estimateDistance(rawClassName, y2Norm - y1Norm)
+
+                rawDetections.add(
+                    Detection(
+                        className = rawClassName,
+                        classId = bestClassId,
+                        confidence = maxScore,
                         bbox = rect,
                         center = Pair(cx, cy),
                         areaRatio = areaRatio,
