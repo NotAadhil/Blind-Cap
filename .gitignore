@@ -37,6 +37,18 @@ yolo*_openvino_model/
 .coverage
 htmlcov/
 
+# Android
+*.apk
+*.ap_
+*.aab
+local.properties
+.gradle/
+build/
+android_app/build/
+android_app/app/build/
+android_app/.gradle/
+android_app/local.properties
+
 # OS & Temp
 Thumbs.db
 .DS_Store

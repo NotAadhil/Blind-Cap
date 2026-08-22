@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,30 +25,33 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Remove any local properties
+        run: rm -f android_app/local.properties
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
-
-      - name: Build Android APK
-        working-directory: ./android_app
-        run: gradle assembleDebug --stacktrace
+          build-root-directory: ./android_app
+          arguments: assembleDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BlindCap-Android-APK
           path: android_app/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
 
       - name: Create GitHub Release with APK
         uses: softprops/action-gh-release@v2
+        continue-on-error: true
         if: startsWith(github.ref, 'refs/heads/main')
         with:
-          tag_name: v1.0.0
-          name: Blind Cap Android App v1.0.0
+          tag_name: latest-apk
+          name: Blind Cap Android App
           body: |
             ## Blind Cap Mobile Android App (1-Click Install APK)
-            Download `BlindCap.apk` below and install it directly onto your Android smartphone.
+            Download the `app-debug.apk` file below and install it directly onto your Android smartphone.
           files: |
             android_app/app/build/outputs/apk/debug/app-debug.apk
         env:
