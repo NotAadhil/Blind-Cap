@@ -11,11 +11,10 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 enum class TrackState {
-    NEW,
-    CONFIRMED,
-    ANNOUNCED,
-    PERSISTENT,
-    DEPARTED
+    CANDIDATE,  // Accumulating temporal confirmation frames
+    CONFIRMED,  // Stable, confirmed active physical object
+    COASTING,   // Temporarily missing (occlusion/blur grace period)
+    DEPARTED    // Expired and removed
 }
 
 data class HazardEvent(
@@ -39,24 +38,24 @@ data class TrackedItem(
     var distanceM: Float,
     var framesSeen: Int = 1,
     var framesMissing: Int = 0,
-    var state: TrackState = TrackState.NEW,
+    var state: TrackState = TrackState.CANDIDATE,
     var isObstructionAnnounced: Boolean = false,
     var criticalTier: Int = 0,
-    val classHistory: ArrayDeque<String> = ArrayDeque(6)
+    val classHistory: ArrayDeque<String> = ArrayDeque(8)
 ) {
     init {
         classHistory.add(className)
     }
 
     fun updateClass(newClass: String) {
-        if (classHistory.size >= 6) classHistory.removeFirst()
+        if (classHistory.size >= 8) classHistory.removeFirst()
         classHistory.addLast(newClass)
         // Majority voting to eliminate classification flicker
         className = classHistory.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: newClass
     }
 
     fun smoothBbox(newBbox: RectF) {
-        val alpha = 0.5f
+        val alpha = 0.45f
         bbox = RectF(
             bbox.left * (1 - alpha) + newBbox.left * alpha,
             bbox.top * (1 - alpha) + newBbox.top * alpha,
@@ -69,7 +68,7 @@ data class TrackedItem(
     fun smoothDistance(newDist: Float) {
         val delta = abs(newDist - distanceM)
         if (delta > 0.15f) {
-            val alpha = if (delta > 0.6f) 0.5f else 0.25f
+            val alpha = if (delta > 0.6f) 0.40f else 0.20f
             distanceM = (distanceM * (1 - alpha) + newDist * alpha)
         }
     }
@@ -80,18 +79,21 @@ class DecisionEngine {
     private var nextTrackId = 1
     val trackedObjects = mutableMapOf<Int, TrackedItem>()
 
-    private var lastAnnouncedSceneFingerprint: Set<String> = emptySet()
+    private var lastAnnouncedSceneFingerprint: String = ""
+    private var pendingSceneFingerprint: String = ""
+    private var pendingSceneStabilityFrames: Int = 0
+
     private var lastSpokenEventText: String? = null
     private var lastSpokenEventTime: Long = 0L
     private var lastHadActiveObjects: Boolean = false
 
     private val minFramesToConfirm = 2
-    private val maxFramesMissing = 15 // Persist tracks for ~1 second through camera blur / panning
+    private val maxFramesMissing = 16 // Persist tracks for ~1.0 - 1.2 seconds through motion blur / pans
 
     fun evaluate(detections: List<Detection>): HazardEvent {
         val now = SystemClock.elapsedRealtime()
 
-        // 1. Robust Spatial Match (IoU + Center Distance + Class Consistency)
+        // 1. Robust Multi-Object Spatial & Scale Invariant Matching
         val matchedTrackIds = mutableSetOf<Int>()
 
         for (det in detections) {
@@ -103,12 +105,12 @@ class DecisionEngine {
 
                 val iou = computeIoU(det.bbox, track.bbox)
                 val cDist = computeCenterDist(det.center, track.center)
-                val classMatches = (det.className.equals(track.className, ignoreCase = true))
+                val classMatches = det.className.equals(track.className, ignoreCase = true)
 
-                // Scale invariant score: handles walking closer (expanding box) and lateral movement
-                val score = iou * 0.35f + (1.0f - cDist).coerceIn(0f, 1f) * 0.45f + (if (classMatches) 0.20f else 0f)
+                // Scale invariant matching: handles approaching (expanding box) and lateral movement
+                val score = iou * 0.40f + (1.0f - cDist).coerceIn(0f, 1f) * 0.40f + (if (classMatches) 0.20f else 0f)
 
-                if (iou > 0.12f || (cDist < 0.35f && classMatches) || (cDist < 0.22f)) {
+                if (iou > 0.15f || (cDist < 0.35f && classMatches) || (cDist < 0.20f)) {
                     if (score > bestScore) {
                         bestScore = score
                         bestTrackId = id
@@ -127,10 +129,14 @@ class DecisionEngine {
                 track.smoothDistance(det.estimatedDistanceM)
                 track.region = det.region
 
-                if (track.framesSeen >= minFramesToConfirm && track.state == TrackState.NEW) {
+                // Promote candidate to confirmed if seen for >= 2 frames with adequate confidence
+                if (track.framesSeen >= minFramesToConfirm && track.state == TrackState.CANDIDATE) {
+                    track.state = TrackState.CONFIRMED
+                } else if (track.state == TrackState.COASTING) {
                     track.state = TrackState.CONFIRMED
                 }
             } else {
+                // New detection candidate
                 val newId = nextTrackId++
                 val newTrack = TrackedItem(
                     id = newId,
@@ -139,14 +145,15 @@ class DecisionEngine {
                     bbox = det.bbox,
                     center = det.center,
                     region = det.region,
-                    distanceM = det.estimatedDistanceM
+                    distanceM = det.estimatedDistanceM,
+                    state = if (det.confidence >= 0.40f) TrackState.CONFIRMED else TrackState.CANDIDATE
                 )
                 trackedObjects[newId] = newTrack
                 matchedTrackIds.add(newId)
             }
         }
 
-        // 2. Age out missing tracks
+        // 2. Age out missing tracks with coasting grace period
         val iterator = trackedObjects.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
@@ -155,20 +162,24 @@ class DecisionEngine {
                 if (entry.value.framesMissing >= maxFramesMissing) {
                     entry.value.state = TrackState.DEPARTED
                     iterator.remove()
+                } else if (entry.value.framesMissing >= 2 && entry.value.state == TrackState.CONFIRMED) {
+                    entry.value.state = TrackState.COASTING
                 }
             }
         }
 
-        // Active confirmed objects (visible now or temporarily occluded for < 4 frames)
+        // Active confirmed objects (visible now or coasting for < 5 frames)
         val activeTracks = trackedObjects.values.filter {
-            it.state != TrackState.NEW && it.state != TrackState.DEPARTED && it.framesMissing < 4
+            it.state == TrackState.CONFIRMED && it.framesMissing < 5 && it.confidence >= 0.25f
         }
 
         // 3. Path Cleared Event (All obstacles left the scene)
         if (activeTracks.isEmpty()) {
             if (lastHadActiveObjects) {
                 lastHadActiveObjects = false
-                lastAnnouncedSceneFingerprint = emptySet()
+                lastAnnouncedSceneFingerprint = ""
+                pendingSceneFingerprint = ""
+                pendingSceneStabilityFrames = 0
                 lastSpokenEventText = "Path is clear."
                 lastSpokenEventTime = now
                 return HazardEvent(
@@ -190,12 +201,10 @@ class DecisionEngine {
             val closest = centerObstacles.minByOrNull { it.distanceM }!!
             val newTier = if (closest.distanceM <= 0.9f) 2 else 1
 
-            // Trigger obstruction alert ONLY on first discovery or if transitioning from Tier 1 -> Tier 2
             val isNewObstruction = !closest.isObstructionAnnounced || (closest.criticalTier < newTier)
             if (isNewObstruction) {
                 closest.isObstructionAnnounced = true
                 closest.criticalTier = newTier
-                closest.state = TrackState.PERSISTENT
 
                 val warning = formatPathObstruction(centerObstacles, newTier)
                 lastSpokenEventText = warning
@@ -212,41 +221,58 @@ class DecisionEngine {
             }
         }
 
-        // 5. Scene Level Announcement (Triggered ONLY when the set of visible objects/regions changes)
-        // Distance fluctuations do NOT change the fingerprint. Walking closer does NOT re-trigger speech.
-        val currentFingerprint = activeTracks.map { "${it.className.lowercase()}_${it.region}" }.toSet()
+        // 5. Intelligent Multi-Object Scene Snapshot & Delta Detection
+        val currentFingerprint = buildSceneFingerprint(activeTracks)
 
-        val newlyAppearedObjects = activeTracks.filter { it.state == TrackState.CONFIRMED }
-        val sceneCompositionChanged = (currentFingerprint != lastAnnouncedSceneFingerprint) &&
-                (lastAnnouncedSceneFingerprint.isEmpty() || !lastAnnouncedSceneFingerprint.containsAll(currentFingerprint))
-
-        if (newlyAppearedObjects.isNotEmpty() && sceneCompositionChanged) {
-            // Mark all newly confirmed objects as ANNOUNCED / PERSISTENT
-            for (t in newlyAppearedObjects) {
-                t.state = TrackState.PERSISTENT
+        if (currentFingerprint != lastAnnouncedSceneFingerprint) {
+            if (currentFingerprint == pendingSceneFingerprint) {
+                pendingSceneStabilityFrames++
+            } else {
+                pendingSceneFingerprint = currentFingerprint
+                pendingSceneStabilityFrames = 1
             }
-            lastAnnouncedSceneFingerprint = currentFingerprint
 
-            val sceneDesc = formatSceneDescription(activeTracks)
-            if (sceneDesc != lastSpokenEventText || (now - lastSpokenEventTime > 8000L)) {
-                lastSpokenEventText = sceneDesc
-                lastSpokenEventTime = now
-                return HazardEvent(
-                    warningText = sceneDesc,
-                    speakPriority = 50,
-                    severity = "CAUTION",
-                    category = "scene",
-                    hazardDetected = true,
-                    allHazards = activeTracks
-                )
+            // Stabilize scene for 2 frames (~100-150ms) to ensure solid multi-object detection before speaking
+            if (pendingSceneStabilityFrames >= 2) {
+                lastAnnouncedSceneFingerprint = currentFingerprint
+                pendingSceneStabilityFrames = 0
+
+                val sceneDesc = formatSceneDescription(activeTracks)
+                if (sceneDesc.isNotEmpty() && (sceneDesc != lastSpokenEventText || (now - lastSpokenEventTime > 7000L))) {
+                    lastSpokenEventText = sceneDesc
+                    lastSpokenEventTime = now
+                    return HazardEvent(
+                        warningText = sceneDesc,
+                        speakPriority = 50,
+                        severity = "CAUTION",
+                        category = "scene",
+                        hazardDetected = true,
+                        allHazards = activeTracks
+                    )
+                }
             }
+        } else {
+            pendingSceneStabilityFrames = 0
         }
 
-        // If scene is unchanged and no new hazards appeared, RETURN SILENCE
+        // Unchanged scene remains completely silent
         return HazardEvent(
             hazardDetected = true,
             allHazards = activeTracks
         )
+    }
+
+    private fun buildSceneFingerprint(tracks: List<TrackedItem>): String {
+        // Canonical fingerprint: sorted class names with their sorted regions
+        // e.g. "chair:center|person:left,right"
+        val map = mutableMapOf<String, MutableList<String>>()
+        for (t in tracks) {
+            val key = t.className.lowercase()
+            map.getOrPut(key) { mutableListOf() }.add(t.region)
+        }
+        return map.entries.sortedBy { it.key }.joinToString("|") { (cls, regions) ->
+            "$cls:${regions.sorted().joinToString(",")}"
+        }
     }
 
     fun getFullSceneSummary(detections: List<Detection>): String {
@@ -259,11 +285,12 @@ class DecisionEngine {
                     bbox = it.bbox,
                     center = it.center,
                     region = it.region,
-                    distanceM = it.estimatedDistanceM
+                    distanceM = it.estimatedDistanceM,
+                    state = TrackState.CONFIRMED
                 )
             }
         } else {
-            trackedObjects.values.toList()
+            trackedObjects.values.filter { it.state == TrackState.CONFIRMED }.toList()
         }
 
         if (items.isEmpty()) return "The path ahead is completely clear with no detected obstacles."
@@ -274,66 +301,79 @@ class DecisionEngine {
     private fun formatSceneDescription(tracks: List<TrackedItem>): String {
         if (tracks.isEmpty()) return "Path is clear."
 
-        val leftItems = tracks.filter { it.region == "left" }
-        val centerItems = tracks.filter { it.region == "center" }
-        val rightItems = tracks.filter { it.region == "right" }
+        // Relevance Prioritization: group by class and sort by proximity and size
+        val classGroups = tracks.groupBy { it.className.lowercase() }
+            .entries.sortedBy { (_, items) ->
+                // Sort by closest distance first, with person prioritized
+                val isPerson = items.first().className.equals("person", ignoreCase = true)
+                val minDist = items.minOf { it.distanceM }
+                if (isPerson) minDist - 2.0f else minDist
+            }.take(4) // Max 4 most prominent categories
 
-        val activeRegions = listOf(
-            Triple("center", centerItems, "ahead"),
-            Triple("left", leftItems, "on your left"),
-            Triple("right", rightItems, "on your right")
-        ).filter { it.second.isNotEmpty() }
+        val sentences = mutableListOf<String>()
 
-        if (activeRegions.isEmpty()) return "Path is clear."
+        for ((_, items) in classGroups) {
+            val count = items.size
+            val rawName = items.first().className
+            val singleName = rawName.lowercase()
+            val pluralName = pluralize(singleName)
 
-        if (activeRegions.size == 1) {
-            val (reg, items, _) = activeRegions[0]
-            val itemsStr = formatItemsList(items)
-            val avgDist = items.map { it.distanceM }.average().toFloat()
-            val distSuffix = formatDistanceStr(avgDist)
+            val leftCount = items.count { it.region == "left" }
+            val centerCount = items.count { it.region == "center" }
+            val rightCount = items.count { it.region == "right" }
 
-            return when (reg) {
-                "center" -> "$itemsStr detected$distSuffix."
-                "left" -> "$itemsStr on your left$distSuffix."
-                else -> "$itemsStr on your right$distSuffix."
+            if (count == 1) {
+                // Single object: "Person on the left." / "Chair in the center."
+                val reg = items.first().region
+                val posStr = when (reg) {
+                    "center" -> "in the center"
+                    "left" -> "on the left"
+                    else -> "on the right"
+                }
+                sentences.add("${singleName.replaceFirstChar { it.uppercase() }} $posStr")
+            } else {
+                // Multiple objects of same class: "Two people detected - one on the left and one on the right."
+                val countWord = numberToWord(count)
+                val posBreakdown = mutableListOf<String>()
+
+                if (leftCount > 0) {
+                    val w = if (leftCount == count) "on the left" else "${numberToWord(leftCount)} on the left"
+                    posBreakdown.add(w)
+                }
+                if (centerCount > 0) {
+                    val w = if (centerCount == count) "in the center" else "${numberToWord(centerCount)} in the center"
+                    posBreakdown.add(w)
+                }
+                if (rightCount > 0) {
+                    val w = if (rightCount == count) "on the right" else "${numberToWord(rightCount)} on the right"
+                    posBreakdown.add(w)
+                }
+
+                if (posBreakdown.size == 1) {
+                    // All in the same region: "Three chairs in the center."
+                    sentences.add("${countWord.replaceFirstChar { it.uppercase() }} $pluralName ${posBreakdown[0]}")
+                } else if (posBreakdown.size == 2) {
+                    sentences.add("${countWord.replaceFirstChar { it.uppercase() }} $pluralName detected: ${posBreakdown[0]} and ${posBreakdown[1]}")
+                } else {
+                    sentences.add("${countWord.replaceFirstChar { it.uppercase() }} $pluralName detected: ${posBreakdown[0]}, ${posBreakdown[1]}, and ${posBreakdown[2]}")
+                }
             }
         }
 
-        val regionClauses = mutableListOf<String>()
-        for ((_, items, posLabel) in activeRegions) {
-            val itemsStr = formatItemsList(items)
-            val avgDist = items.map { it.distanceM }.average().toFloat()
-            val distSuffix = formatDistanceStr(avgDist)
-            regionClauses.add("$itemsStr $posLabel$distSuffix")
-        }
-
-        return when (regionClauses.size) {
-            2 -> "${regionClauses[0]} and ${regionClauses[1]}."
-            else -> "${regionClauses[0]}, ${regionClauses[1]}, and ${regionClauses[2]}."
-        }
+        return sentences.joinToString(". ") + "."
     }
 
     private fun formatPathObstruction(items: List<TrackedItem>, tier: Int): String {
-        val itemsStr = formatItemsList(items)
+        val count = items.size
+        val firstItem = items.first()
+        val name = if (count > 1) "${numberToWord(count)} ${pluralize(firstItem.className)}" else firstItem.className.lowercase()
         val minDist = items.minOfOrNull { it.distanceM } ?: 1.0f
         val distSuffix = formatDistanceStr(minDist)
-        return if (tier >= 2) {
-            "Stop! $itemsStr is very close$distSuffix. Please stop!"
-        } else {
-            "Stop! $itemsStr is obstructing your path$distSuffix."
-        }
-    }
 
-    private fun formatItemsList(items: List<TrackedItem>): String {
-        val counts = items.groupingBy { it.className }.eachCount()
-        val phrases = counts.map { (name, count) ->
-            if (count > 1) "$count ${pluralize(name)}" else name
-        }
-        return when (phrases.size) {
-            0 -> "Obstacle"
-            1 -> phrases[0]
-            2 -> "${phrases[0]} and ${phrases[1]}"
-            else -> phrases.dropLast(1).joinToString(", ") + ", and " + phrases.last()
+        return if (tier >= 2) {
+            "Stop! $name is very close$distSuffix. Please stop!"
+        } else {
+            "Stop! $name is obstructing your path$distSuffix."
         }.replaceFirstChar { it.uppercase() }
     }
 
@@ -345,6 +385,20 @@ class DecisionEngine {
             "couch" -> "couches"
             "glass", "wine glass" -> "wine glasses"
             else -> if (name.endsWith("s") || name.endsWith("sh") || name.endsWith("ch")) "${name}es" else "${name}s"
+        }
+    }
+
+    private fun numberToWord(num: Int): String {
+        return when (num) {
+            1 -> "one"
+            2 -> "two"
+            3 -> "three"
+            4 -> "four"
+            5 -> "five"
+            6 -> "six"
+            7 -> "seven"
+            8 -> "eight"
+            else -> num.toString()
         }
     }
 
@@ -382,7 +436,9 @@ class DecisionEngine {
 
     fun reset() {
         trackedObjects.clear()
-        lastAnnouncedSceneFingerprint = emptySet()
+        lastAnnouncedSceneFingerprint = ""
+        pendingSceneFingerprint = ""
+        pendingSceneStabilityFrames = 0
         lastSpokenEventText = null
         lastSpokenEventTime = 0L
         lastHadActiveObjects = false

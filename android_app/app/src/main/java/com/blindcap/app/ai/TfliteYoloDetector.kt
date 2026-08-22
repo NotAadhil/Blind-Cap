@@ -42,7 +42,7 @@ class TfliteYoloDetector(
     private val labels = mutableListOf<String>()
 
     private val inputSize = 320
-    private val confThreshold = 0.25f
+    var confThreshold: Float = 0.30f // Configurable 30% baseline threshold
 
     var activeDevice: String = "Initializing..."
     var lastTimings: DetectionTimings = DetectionTimings()
@@ -141,13 +141,15 @@ class TfliteYoloDetector(
             val t2 = SystemClock.elapsedRealtimeNanos()
 
             // 3. Postprocessing & Filtering
+            // Extract raw candidates >= 0.20f so tracking state machine can maintain occluded/borderline tracks
+            val minRawScore = (confThreshold * 0.70f).coerceAtLeast(0.18f)
             val detections300 = outputBuffer[0]
             val invSize = 1.0f / inputSize.toFloat()
 
             for (i in 0 until 300) {
                 val row = detections300[i]
                 val score = row[4]
-                if (score < confThreshold) continue
+                if (score < minRawScore) continue
 
                 val classId = row[5].roundToInt()
                 if (classId !in labels.indices) continue
