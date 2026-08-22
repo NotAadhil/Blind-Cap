@@ -6,14 +6,17 @@ import android.graphics.RectF
 import android.os.SystemClock
 import android.util.Log
 import com.blindcap.app.engine.DepthEstimator
+import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
-import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
+import org.tensorflow.lite.support.common.ops.NormalizeOp
+import org.tensorflow.lite.support.image.ImageProcessor
+import org.tensorflow.lite.support.image.TensorImage
+import org.tensorflow.lite.support.image.ops.ResizeOp
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.FloatBuffer
 import java.util.ArrayDeque
 import kotlin.math.max
 import kotlin.math.min
@@ -31,27 +34,23 @@ class TfliteYoloDetector(
     private var gpuDelegate: GpuDelegate? = null
     private val labels = mutableListOf<String>()
 
-    // 320x320 processing resolution for ultra fast real-time 30+ FPS performance
     private val inputSize = 320
     private val confThreshold = 0.25f
 
-    var activeDevice: String = "YOLO26n 320 (Initializing)"
+    var activeDevice: String = "Initializing..."
     var lastInferenceMs: Float = 0f
     var lastError: String? = null
 
-    // Pre-allocated direct FloatBuffer for NHWC input [1, 320, 320, 3]
-    private val inputDirectBuffer: ByteBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
-        order(ByteOrder.nativeOrder())
-    }
-    private val inputFloatBuffer: FloatBuffer = inputDirectBuffer.asFloatBuffer()
-    private val intValues = IntArray(inputSize * inputSize)
+    // High performance TFLite Support ImageProcessor (runs in native C++ SIMD)
+    private val imageProcessor = ImageProcessor.Builder()
+        .add(ResizeOp(inputSize, inputSize, ResizeOp.ResizeMethod.BILINEAR))
+        .add(NormalizeOp(0f, 255f))
+        .build()
 
-    // Reusable scaled bitmap to avoid memory churn
-    private var scaledBitmap: Bitmap? = null
+    private var tensorImage = TensorImage(DataType.FLOAT32)
 
     // Output shape for YOLO26n End-to-End: [1, 300, 6] -> [x1, y1, x2, y2, score, class_id]
     private val outputBuffer: Array<Array<FloatArray>> = Array(1) { Array(300) { FloatArray(6) } }
-
     private val classHistoryMap = mutableMapOf<Int, ArrayDeque<Pair<String, Float>>>()
 
     init {
@@ -84,29 +83,22 @@ class TfliteYoloDetector(
                 rewind()
             }
 
-            // Try GPU Delegate first for maximum FPS on Pixel / Tensor
-            val compatList = CompatibilityList()
             var initializedWithGpu = false
-
-            if (compatList.isDelegateSupportedOnThisDevice) {
-                try {
-                    val delegateOptions = compatList.bestOptionsForThisDevice
-                    gpuDelegate = GpuDelegate(delegateOptions)
-                    val gpuOptions = Interpreter.Options().apply {
-                        addDelegate(gpuDelegate)
-                    }
-                    interpreter = Interpreter(modelBuffer, gpuOptions)
-                    activeDevice = "YOLO26n 320 (GPU Accel)"
-                    initializedWithGpu = true
-                    Log.i(tag, "Initialized TFLite with GPU Delegate acceleration successfully")
-                } catch (e: Exception) {
-                    Log.w(tag, "GPU Delegate failed to initialize, falling back to CPU: ${e.message}")
-                    gpuDelegate?.close()
-                    gpuDelegate = null
+            try {
+                gpuDelegate = GpuDelegate()
+                val gpuOptions = Interpreter.Options().apply {
+                    addDelegate(gpuDelegate)
                 }
+                interpreter = Interpreter(modelBuffer, gpuOptions)
+                activeDevice = "YOLO26n 320 (GPU Accel)"
+                initializedWithGpu = true
+                Log.i(tag, "Initialized TFLite with GPU Delegate acceleration successfully")
+            } catch (e: Exception) {
+                Log.w(tag, "GPU Delegate unavailable, falling back to 4T CPU: ${e.message}")
+                gpuDelegate?.close()
+                gpuDelegate = null
             }
 
-            // Fallback to high performance 4-thread XNNPACK CPU
             if (!initializedWithGpu) {
                 val cpuOptions = Interpreter.Options().apply {
                     setNumThreads(4)
@@ -154,44 +146,14 @@ class TfliteYoloDetector(
         }
 
         val startTime = SystemClock.elapsedRealtime()
-
-        val resized = if (bitmap.width == inputSize && bitmap.height == inputSize) {
-            bitmap
-        } else {
-            val target = scaledBitmap ?: Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true).also {
-                scaledBitmap = it
-            }
-            if (target.width != inputSize || target.height != inputSize) {
-                Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
-            } else {
-                val canvas = android.graphics.Canvas(target)
-                val srcRect = android.graphics.Rect(0, 0, bitmap.width, bitmap.height)
-                val dstRect = android.graphics.Rect(0, 0, inputSize, inputSize)
-                canvas.drawBitmap(bitmap, srcRect, dstRect, null)
-                target
-            }
-        }
-
-        // Fast NHWC FloatBuffer normalization
-        synchronized(inputFloatBuffer) {
-            inputFloatBuffer.rewind()
-            resized.getPixels(intValues, 0, inputSize, 0, 0, inputSize, inputSize)
-
-            val totalPixels = inputSize * inputSize
-            val inv255 = 1.0f / 255.0f
-            for (i in 0 until totalPixels) {
-                val pixel = intValues[i]
-                inputFloatBuffer.put(((pixel shr 16) and 0xFF) * inv255)
-                inputFloatBuffer.put(((pixel shr 8) and 0xFF) * inv255)
-                inputFloatBuffer.put((pixel and 0xFF) * inv255)
-            }
-            inputFloatBuffer.rewind()
-        }
-
         val rawDetections = mutableListOf<Detection>()
 
         try {
-            interp.run(inputDirectBuffer, outputBuffer)
+            // Fast Native C++ SIMD Preprocessing with TensorImage
+            tensorImage.load(bitmap)
+            val processedImage = imageProcessor.process(tensorImage)
+
+            interp.run(processedImage.buffer, outputBuffer)
 
             val detections300 = outputBuffer[0]
             val invSize = 1.0f / inputSize.toFloat()
@@ -262,7 +224,5 @@ class TfliteYoloDetector(
     fun close() {
         interpreter?.close()
         gpuDelegate?.close()
-        scaledBitmap?.recycle()
-        scaledBitmap = null
     }
 }

@@ -16,4 +16,41 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <!-- Accessible Quick Action Buttons for Blind / Low-Vision Users -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        android:gravity="center"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <Button
+            android:id="@+id/btnOcr"
+            android:layout_width="0dp"
+            android:layout_height="64dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:text="READ TEXT (OCR)"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:backgroundTint="#0088FF"
+            android:textColor="#FFFFFF" />
+
+        <Button
+            android:id="@+id/btnScene"
+            android:layout_width="0dp"
+            android:layout_height="64dp"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:text="SCENE SUMMARY"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:backgroundTint="#00AA44"
+            android:textColor="#FFFFFF" />
+
+    </LinearLayout>
+
 </androidx.constraintlayout.widget.ConstraintLayout>

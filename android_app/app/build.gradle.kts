@@ -72,8 +72,8 @@ dependencies {
     // ONNX Runtime Mobile
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
 
-    // Google ML Kit On-Device Text Recognition (OCR)
-    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
+    // Google ML Kit On-Device Text Recognition (OCR - Bundled Offline Model)
+    implementation("com.google.mlkit:text-recognition:16.0.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")

@@ -73,6 +73,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         setupGestures()
+        setupActionButtons()
 
         if (allPermissionsGranted()) {
             startCamera()
@@ -94,12 +95,16 @@ class MainActivity : AppCompatActivity() {
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 ttsManager.isMuted = !ttsManager.isMuted
-                val status = if (ttsManager.isMuted) "Speech muted." else "Speech unmuted."
+                val status = if (ttsManager.isMuted) "Speech muted." else "Speech active."
                 Toast.makeText(this@MainActivity, status, Toast.LENGTH_SHORT).show()
                 if (!ttsManager.isMuted) {
                     ttsManager.speak("Speech active.", priority = 60, severity = "INFO")
                 }
                 return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                triggerOcrReading()
             }
         })
 
@@ -109,10 +114,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun setupActionButtons() {
+        binding.btnOcr.setOnClickListener {
+            triggerOcrReading()
+        }
+        binding.btnScene.setOnClickListener {
+            triggerSceneSummary()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
         detector.close()
+        ocrManager.close()
         ttsManager.shutdown()
     }
 
@@ -157,11 +172,11 @@ class MainActivity : AppCompatActivity() {
             if (bitmap != null) {
                 latestBitmap = bitmap
 
-                // 1. Run ML Kit Object Detection (synchronous via latch, always works on Pixel)
+                // 1. Run YOLO26n TFLite Detection
                 val detections = detector.detect(bitmap)
                 currentDetections = detections
 
-                // 2. Evaluate Decision Engine
+                // 2. Evaluate Decision Engine with Alert Hierarchy
                 val event = decisionEngine.evaluate(detections)
 
                 // 3. Dispatch Speech if warranted
@@ -209,80 +224,47 @@ class MainActivity : AppCompatActivity() {
                 bitmap
             }
         } catch (e: Exception) {
-            Log.e(tag, "toBitmap failed: ${e.message}, trying YUV fallback")
-            try {
-                yuvToBitmapFallback(imageProxy)
-            } catch (e2: Exception) {
-                Log.e(tag, "YUV fallback failed: ${e2.message}")
-                null
-            }
-        }
-    }
-
-    private fun yuvToBitmapFallback(imageProxy: ImageProxy): Bitmap? {
-        val yBuffer = imageProxy.planes[0].buffer
-        val uBuffer = imageProxy.planes[1].buffer
-        val vBuffer = imageProxy.planes[2].buffer
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
-        val nv21 = ByteArray(ySize + uSize + vSize)
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
-
-        val yuvImage = android.graphics.YuvImage(
-            nv21,
-            android.graphics.ImageFormat.NV21,
-            imageProxy.width,
-            imageProxy.height,
+            Log.e(tag, "toBitmap error: ${e.message}")
             null
-        )
-        val out = java.io.ByteArrayOutputStream()
-        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, imageProxy.width, imageProxy.height), 90, out)
-        val imageBytes = out.toByteArray()
-        val bitmap = android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-
-        val rotationDegrees = imageProxy.imageInfo.rotationDegrees
-        return if (rotationDegrees != 0 && bitmap != null) {
-            val matrix = Matrix()
-            matrix.postRotate(rotationDegrees.toFloat())
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-        } else {
-            bitmap
         }
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        when (keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP -> {
-                triggerOcrReading()
-                return true
-            }
-            KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                triggerSceneSummary()
-                return true
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    triggerOcrReading()
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    triggerSceneSummary()
+                    return true
+                }
             }
         }
-        return super.onKeyDown(keyCode, event)
+        return super.dispatchKeyEvent(event)
     }
 
     private fun triggerOcrReading() {
-        val bitmap = latestBitmap ?: return
-        ttsManager.speak("Reading text...", priority = 70, severity = "INFO")
+        val bitmap = latestBitmap
+        if (bitmap == null) {
+            ttsManager.speak("Camera initializing. Please wait.", priority = 70, severity = "INFO")
+            return
+        }
+        ttsManager.speak("Reading text...", priority = 75, severity = "INFO")
         lifecycleScope.launch {
             val resultText = ocrManager.extractText(bitmap)
             withContext(Dispatchers.Main) {
-                ttsManager.speak(resultText, priority = 70, severity = "INFO")
+                ttsManager.speak(resultText, priority = 75, severity = "INFO")
+                Toast.makeText(this@MainActivity, resultText, Toast.LENGTH_LONG).show()
             }
         }
     }
 
     private fun triggerSceneSummary() {
         val summary = decisionEngine.getFullSceneSummary(currentDetections)
-        ttsManager.speak(summary, priority = 70, severity = "INFO")
+        ttsManager.speak(summary, priority = 75, severity = "INFO")
+        Toast.makeText(this@MainActivity, summary, Toast.LENGTH_LONG).show()
     }
 
     private fun allPermissionsGranted() = ContextCompat.checkSelfPermission(

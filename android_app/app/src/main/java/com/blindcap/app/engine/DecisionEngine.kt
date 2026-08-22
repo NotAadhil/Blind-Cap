@@ -1,199 +1,217 @@
 package com.blindcap.app.engine
 
+import android.graphics.RectF
+import android.os.SystemClock
 import com.blindcap.app.ai.Detection
+import java.util.ArrayDeque
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 data class HazardEvent(
     val warningText: String? = null,
     val speakPriority: Int = 0,
-    val severity: String = "INFO", // "CRITICAL", "WARNING", "CAUTION", "INFO"
-    val activeObstacles: List<Detection> = emptyList(),
-    val focusObject: String? = null,
-    val focusSeverity: String = "INFO"
+    val severity: String = "INFO",
+    val category: String = "",
+    val dedupeKey: String = "",
+    val hazardDetected: Boolean = false,
+    val activeHazard: TrackedItem? = null,
+    val allHazards: List<TrackedItem> = emptyList()
 )
 
 data class TrackedItem(
-    val className: String,
+    val id: Int,
+    var className: String,
+    var confidence: Float,
+    var bbox: RectF,
+    var center: Pair<Float, Float>,
     var region: String,
     var distanceM: Float,
     var framesSeen: Int = 1,
     var framesMissing: Int = 0,
+    var lastWarningTime: Long = 0L,
     var criticalTier: Int = 0,
-    var hasAnnouncedPresence: Boolean = false,
     var lastAnnouncedDistanceM: Float? = null,
-    var lastDistanceAnnouncedTime: Long = 0L,
-    val motionFilter: MotionFilter = MotionFilter()
+    var hasAnnouncedInFrame: Boolean = false
 )
 
 class DecisionEngine {
 
-    companion object {
-        const val DANGER_ZONE_1_DISTANCE_M = 1.80f
-        const val DANGER_ZONE_2_DISTANCE_M = 0.90f
-        const val SCENE_CHANGE_COOLDOWN_MS = 1200L
-        const val OBSTRUCTION_COOLDOWN_MS = 1200L
-    }
-
-    private val trackedObjects = mutableMapOf<String, TrackedItem>()
     private var nextTrackId = 1
+    val trackedObjects = mutableMapOf<Int, TrackedItem>()
 
     private var lastSpokenSceneSignature: String? = null
     private var lastSceneSpeakTime: Long = 0L
+    private var lastObstructionSpeakTime: Long = 0L
     private var lastHadObjects: Boolean = false
 
-    fun evaluate(detections: List<Detection>, currentTimeMs: Long = System.currentTimeMillis()): HazardEvent {
-        // --- 1. Track objects across frames with spatial matching ---
-        val matchedKeys = mutableSetOf<String>()
+    private val obstructionCooldownMs = 3500L
+    private val sceneChangeCooldownMs = 4000L
+
+    fun evaluate(detections: List<Detection>): HazardEvent {
+        val now = SystemClock.elapsedRealtime()
+
+        // 1. Spatial Tracking Match (IoU & Center Distance)
+        val matchedTrackIds = mutableSetOf<Int>()
+        val currentItems = mutableListOf<TrackedItem>()
 
         for (det in detections) {
-            val binIdx = (det.center.first * 5.0f).toInt().coerceIn(0, 4)
-            val trackKey = "${det.className}_$binIdx"
-            matchedKeys.add(trackKey)
+            var bestTrackId: Int? = null
+            var bestScore = 0.0f
 
-            val existing = trackedObjects[trackKey]
-            if (existing != null) {
-                existing.framesSeen++
-                existing.framesMissing = 0
-                existing.region = det.region
-                existing.distanceM = det.estimatedDistanceM
-                existing.motionFilter.updateArea(det.areaRatio)
+            for ((id, track) in trackedObjects) {
+                if (id in matchedTrackIds) continue
+                val iou = computeIoU(det.bbox, track.bbox)
+                val cDist = computeCenterDist(det.center, track.center)
+
+                if (iou > 0.25f || cDist < 0.20f) {
+                    val score = iou * 0.7f + (1.0f - cDist) * 0.3f
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestTrackId = id
+                    }
+                }
+            }
+
+            if (bestTrackId != null) {
+                matchedTrackIds.add(bestTrackId)
+                val track = trackedObjects[bestTrackId]!!
+                track.framesSeen++
+                track.framesMissing = 0
+                track.className = det.className
+                track.confidence = det.confidence
+                track.bbox = det.bbox
+                track.center = det.center
+                track.region = det.region
+                track.distanceM = det.estimatedDistanceM
+                currentItems.add(track)
             } else {
-                val item = TrackedItem(
+                val newId = nextTrackId++
+                val newTrack = TrackedItem(
+                    id = newId,
                     className = det.className,
+                    confidence = det.confidence,
+                    bbox = det.bbox,
+                    center = det.center,
                     region = det.region,
                     distanceM = det.estimatedDistanceM
                 )
-                item.motionFilter.updateArea(det.areaRatio)
-                trackedObjects[trackKey] = item
+                trackedObjects[newId] = newTrack
+                matchedTrackIds.add(newId)
+                currentItems.add(newTrack)
             }
         }
 
-        // Clean up missing tracks
-        val toRemove = mutableListOf<String>()
-        for ((key, item) in trackedObjects) {
-            if (!matchedKeys.contains(key)) {
-                item.framesMissing++
-                if (item.framesMissing > 12) {
-                    toRemove.add(key)
+        // 2. Remove Stale Tracks (missing for >= 3 frames)
+        val iterator = trackedObjects.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (entry.key !in matchedTrackIds) {
+                entry.value.framesMissing++
+                if (entry.value.framesMissing >= 3) {
+                    iterator.remove()
                 }
             }
         }
-        toRemove.forEach { trackedObjects.remove(it) }
 
-        // --- 2. Filter stable active tracks (seen >= 2 frames) ---
         val activeTracks = trackedObjects.values.filter { it.framesSeen >= 2 && it.framesMissing == 0 }
 
-        val elapsedSinceScene = currentTimeMs - lastSceneSpeakTime
-
-        // Check for urgent Danger Zone Obstructions in Walking Corridor (Center)
-        val centerObstacles = activeTracks.filter { it.region == "center" }
-        val newCrit2 = centerObstacles.filter { it.distanceM <= DANGER_ZONE_2_DISTANCE_M && it.criticalTier < 2 }
-        val newCrit1 = centerObstacles.filter { it.distanceM <= DANGER_ZONE_1_DISTANCE_M && it.criticalTier < 1 }
-
-        // Priority 1: Critical Tier 2 Immediate Danger (<= 0.9m)
-        if (newCrit2.isNotEmpty() && elapsedSinceScene >= 1000L) {
-            val text = formatPathObstruction(newCrit2, tier = 2)
-            for (item in newCrit2) {
-                item.criticalTier = 2
-                item.hasAnnouncedPresence = true
-                item.lastAnnouncedDistanceM = item.distanceM
-                item.lastDistanceAnnouncedTime = currentTimeMs
+        // 3. Path Cleared Transition
+        if (activeTracks.isEmpty()) {
+            if (lastHadObjects) {
+                lastHadObjects = false
+                lastSpokenSceneSignature = null
+                return HazardEvent(
+                    warningText = "Path is clear.",
+                    speakPriority = 40,
+                    severity = "INFO",
+                    category = "path_clear",
+                    hazardDetected = false
+                )
             }
-            lastSceneSpeakTime = currentTimeMs
-            lastSpokenSceneSignature = buildSceneSignature(activeTracks)
-            lastHadObjects = true
-            return HazardEvent(
-                warningText = text,
-                speakPriority = 100,
-                severity = "CRITICAL",
-                activeObstacles = detections,
-                focusObject = newCrit2[0].className,
-                focusSeverity = "CRITICAL"
-            )
+            return HazardEvent(hazardDetected = false)
         }
 
-        // Priority 2: Critical Tier 1 Danger Zone Entry (<= 1.8m)
-        if (newCrit1.isNotEmpty() && elapsedSinceScene >= OBSTRUCTION_COOLDOWN_MS) {
-            val text = formatPathObstruction(newCrit1, tier = 1)
-            for (item in newCrit1) {
-                item.criticalTier = 1
-                item.hasAnnouncedPresence = true
-                item.lastAnnouncedDistanceM = item.distanceM
-                item.lastDistanceAnnouncedTime = currentTimeMs
+        lastHadObjects = true
+
+        // 4. Alert Hierarchy: Danger Zone Tier 1 (<=1.8m) and Tier 2 (<=0.9m) in Center Corridor
+        val centerObstacles = activeTracks.filter { it.region == "center" && it.distanceM <= 1.8f }
+        if (centerObstacles.isNotEmpty()) {
+            val closest = centerObstacles.minByOrNull { it.distanceM }!!
+            val tier = if (closest.distanceM <= 0.9f) 2 else 1
+
+            val shouldSpeakObstruction = (closest.criticalTier != tier) ||
+                    (now - lastObstructionSpeakTime > obstructionCooldownMs)
+
+            if (shouldSpeakObstruction) {
+                closest.criticalTier = tier
+                lastObstructionSpeakTime = now
+                val warning = formatPathObstruction(centerObstacles, tier)
+                return HazardEvent(
+                    warningText = warning,
+                    speakPriority = if (tier >= 2) 90 else 80,
+                    severity = if (tier >= 2) "CRITICAL" else "WARNING",
+                    category = closest.className,
+                    hazardDetected = true,
+                    activeHazard = closest,
+                    allHazards = activeTracks
+                )
             }
-            lastSceneSpeakTime = currentTimeMs
-            lastSpokenSceneSignature = buildSceneSignature(activeTracks)
-            lastHadObjects = true
-            return HazardEvent(
-                warningText = text,
-                speakPriority = 90,
-                severity = "CRITICAL",
-                activeObstacles = detections,
-                focusObject = newCrit1[0].className,
-                focusSeverity = "CRITICAL"
-            )
         }
 
-        // --- 3. Dynamic Multi-Object Scene Evaluation with Spoken Baseline Diffing ---
-        val currentSig = buildSceneSignature(activeTracks)
-        val sigChanged = (currentSig != lastSpokenSceneSignature) && activeTracks.isNotEmpty()
-        val clearedChanged = activeTracks.isEmpty() && (lastSpokenSceneSignature != null)
+        // 5. In-Frame Scene Announcement & Dynamic Distance Updates
+        val sceneSig = buildSceneSignature(activeTracks)
+        val sceneChanged = (sceneSig != lastSpokenSceneSignature)
+        val cooldownPassed = (now - lastSceneSpeakTime > sceneChangeCooldownMs)
 
-        val hasDistanceShift = activeTracks.any {
-            it.hasAnnouncedPresence &&
-            it.lastAnnouncedDistanceM != null &&
-            abs(it.distanceM - it.lastAnnouncedDistanceM!!) >= 0.80f &&
-            (currentTimeMs - it.lastDistanceAnnouncedTime) >= 2500L
-        }
-
-        if ((sigChanged || hasDistanceShift) && elapsedSinceScene >= SCENE_CHANGE_COOLDOWN_MS) {
-            val text = formatSceneDescription(activeTracks)
-            lastSpokenSceneSignature = currentSig
-            lastSceneSpeakTime = currentTimeMs
-            lastHadObjects = true
-            for (t in activeTracks) {
-                t.hasAnnouncedPresence = true
-                t.lastAnnouncedDistanceM = t.distanceM
-                t.lastDistanceAnnouncedTime = currentTimeMs
-            }
+        if (sceneChanged && cooldownPassed) {
+            lastSpokenSceneSignature = sceneSig
+            lastSceneSpeakTime = now
+            val sceneDesc = formatSceneDescription(activeTracks)
             return HazardEvent(
-                warningText = text,
-                speakPriority = 60,
-                severity = "WARNING",
-                activeObstacles = detections,
-                focusObject = activeTracks.firstOrNull()?.className,
-                focusSeverity = "WARNING"
-            )
-        }
-
-        if (clearedChanged && elapsedSinceScene >= SCENE_CHANGE_COOLDOWN_MS) {
-            lastSpokenSceneSignature = null
-            lastSceneSpeakTime = currentTimeMs
-            lastHadObjects = false
-            return HazardEvent(
-                warningText = "Path is clear.",
-                speakPriority = 40,
-                severity = "INFO",
-                activeObstacles = emptyList(),
-                focusObject = null,
-                focusSeverity = "INFO"
+                warningText = sceneDesc,
+                speakPriority = 50,
+                severity = "CAUTION",
+                category = "scene",
+                hazardDetected = true,
+                allHazards = activeTracks
             )
         }
 
         return HazardEvent(
-            warningText = null,
-            activeObstacles = detections,
-            focusObject = activeTracks.firstOrNull()?.className,
-            focusSeverity = if (activeTracks.any { it.criticalTier > 0 }) "CRITICAL" else "INFO"
+            hazardDetected = true,
+            allHazards = activeTracks
         )
     }
 
     private fun buildSceneSignature(tracks: List<TrackedItem>): String {
-        return tracks.groupBy { it.className to it.region }
-            .map { (key, list) -> "${key.first}_${key.second}_${list.size}" }
-            .sorted()
-            .joinToString("|")
+        return tracks.sortedBy { it.id }.joinToString("|") {
+            "${it.className}_${it.region}_${(it.distanceM * 2).roundToInt() / 2f}"
+        }
+    }
+
+    fun getFullSceneSummary(detections: List<Detection>): String {
+        val items = if (detections.isNotEmpty()) {
+            detections.map {
+                TrackedItem(
+                    id = 0,
+                    className = it.className,
+                    confidence = it.confidence,
+                    bbox = it.bbox,
+                    center = it.center,
+                    region = it.region,
+                    distanceM = it.estimatedDistanceM
+                )
+            }
+        } else {
+            trackedObjects.values.toList()
+        }
+
+        if (items.isEmpty()) return "The path ahead is completely clear with no detected obstacles."
+        val desc = formatSceneDescription(items)
+        return "Scene summary: $desc"
     }
 
     private fun formatSceneDescription(tracks: List<TrackedItem>): String {
@@ -219,8 +237,8 @@ class DecisionEngine {
 
             return when (reg) {
                 "center" -> "$itemsStr detected$distSuffix."
-                "left" -> "$itemsStr on the left$distSuffix."
-                else -> "$itemsStr on the right$distSuffix."
+                "left" -> "$itemsStr on your left$distSuffix."
+                else -> "$itemsStr on your right$distSuffix."
             }
         }
 
@@ -275,45 +293,34 @@ class DecisionEngine {
 
     private fun formatDistanceStr(distM: Float): String {
         val rounded = (distM * 10.0f).roundToInt() / 10.0f
-        return if (rounded in 0.5f..5.0f) {
+        return if (rounded in 0.4f..6.0f) {
             ", $rounded meters away"
         } else {
             ""
         }
     }
 
-    fun getFullSceneSummary(detections: List<Detection>): String {
-        if (detections.isEmpty()) {
-            return if (trackedObjects.isEmpty()) {
-                "The path ahead is completely clear. No objects detected."
-            } else {
-                val desc = formatSceneDescription(trackedObjects.values.toList())
-                "Scene summary: $desc"
-            }
-        }
-        // Describe live detections directly so button always reflects what camera sees
-        val grouped = detections.groupBy { it.region }
-        val parts = mutableListOf<String>()
-        grouped["center"]?.let { items ->
-            val names = items.groupingBy { it.className }.eachCount()
-                .map { (n, c) -> if (c > 1) "$c ${pluralize(n)}" else n }
-                .joinToString(" and ")
-            val dist = items.minOfOrNull { it.estimatedDistanceM } ?: 0f
-            parts.add("$names ahead${if (dist in 0.3f..5f) ", ${(dist * 10).roundToInt() / 10.0f} meters away" else ""}")
-        }
-        grouped["left"]?.let { items ->
-            val names = items.groupingBy { it.className }.eachCount()
-                .map { (n, c) -> if (c > 1) "$c ${pluralize(n)}" else n }
-                .joinToString(" and ")
-            parts.add("$names on your left")
-        }
-        grouped["right"]?.let { items ->
-            val names = items.groupingBy { it.className }.eachCount()
-                .map { (n, c) -> if (c > 1) "$c ${pluralize(n)}" else n }
-                .joinToString(" and ")
-            parts.add("$names on your right")
-        }
-        return if (parts.isEmpty()) "Path is clear." else parts.joinToString(". ") + "."
+    private fun computeIoU(b1: RectF, b2: RectF): Float {
+        val left = max(b1.left, b2.left)
+        val top = max(b1.top, b2.top)
+        val right = min(b1.right, b2.right)
+        val bottom = min(b1.bottom, b2.bottom)
+
+        val interW = max(0f, right - left)
+        val interH = max(0f, bottom - top)
+        val interArea = interW * interH
+        if (interArea <= 0f) return 0f
+
+        val area1 = b1.width() * b1.height()
+        val area2 = b2.width() * b2.height()
+        val unionArea = area1 + area2 - interArea
+        return if (unionArea > 0f) interArea / unionArea else 0f
+    }
+
+    private fun computeCenterDist(c1: Pair<Float, Float>, c2: Pair<Float, Float>): Float {
+        val dx = c1.first - c2.first
+        val dy = c1.second - c2.second
+        return sqrt(dx * dx + dy * dy)
     }
 
     fun reset() {
