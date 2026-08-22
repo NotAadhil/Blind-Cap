@@ -27,6 +27,7 @@ class OverlayView @JvmOverloads constructor(
     var inferenceMs: Float = 50.0f
     var activeDevice: String = "GPU (Mobile NPU)"
     var ttsMode: String = "NORMAL"
+    var errorMessage: String? = null
 
     private val boxPaint = Paint().apply {
         style = Paint.Style.STROKE
@@ -111,7 +112,7 @@ class OverlayView @JvmOverloads constructor(
         yPos += lineGap
         canvas.drawText("Objects in View: ${detections.size}", 40f, yPos, textPaint)
         yPos += lineGap
-        val statusText = hazardEvent?.warningText ?: "Path is clear."
+        val statusText = errorMessage ?: (hazardEvent?.warningText ?: "Path is clear.")
         canvas.drawText("Status: ${statusText.take(24)}", 40f, yPos, textPaint)
     }
 }

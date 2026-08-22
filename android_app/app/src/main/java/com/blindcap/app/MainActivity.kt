@@ -177,6 +177,7 @@ class MainActivity : AppCompatActivity() {
                     binding.overlayView.inferenceFps = inferenceFps
                     binding.overlayView.inferenceMs = detector.lastInferenceMs
                     binding.overlayView.activeDevice = detector.activeDevice
+                    binding.overlayView.errorMessage = detector.lastError
                     binding.overlayView.updateResults(detections, event)
                 }
             }

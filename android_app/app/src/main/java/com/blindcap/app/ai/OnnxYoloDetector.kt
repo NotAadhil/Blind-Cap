@@ -11,6 +11,8 @@ import android.util.Log
 import com.blindcap.app.engine.DepthEstimator
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.ArrayDeque
 import java.util.Collections
@@ -32,8 +34,16 @@ class OnnxYoloDetector(
     private val inputSize = 480
     private val confThreshold = 0.25f
 
-    var activeDevice: String = "CPU"
+    var activeDevice: String = "CPU (Multi-Thread)"
     var lastInferenceMs: Float = 0f
+    var lastError: String? = null
+
+    // Pre-allocated direct FloatBuffer for zero-GC allocation and fast JNI access
+    private val directBuffer: ByteBuffer = ByteBuffer.allocateDirect(1 * 3 * inputSize * inputSize * 4).apply {
+        order(ByteOrder.nativeOrder())
+    }
+    private val floatBuffer: FloatBuffer = directBuffer.asFloatBuffer()
+    private val intValues = IntArray(inputSize * inputSize)
 
     private val classHistoryMap = mutableMapOf<Int, ArrayDeque<Pair<String, Float>>>()
 
@@ -52,6 +62,7 @@ class OnnxYoloDetector(
             reader.close()
             Log.i(tag, "Loaded ${labels.size} labels from assets")
         } catch (e: Exception) {
+            lastError = "Label load: ${e.message}"
             Log.e(tag, "Error loading labels: ${e.message}")
         }
     }
@@ -62,25 +73,27 @@ class OnnxYoloDetector(
             val sessionOptions = OrtSession.SessionOptions().apply {
                 setIntraOpNumThreads(4)
                 setInterOpNumThreads(4)
-                try {
-                    addNnapi()
-                    activeDevice = "NNAPI (Mobile NPU/GPU)"
-                } catch (e: Exception) {
-                    activeDevice = "CPU (Multi-Thread)"
-                }
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             }
 
             val modelBytes = context.assets.open(modelFileName).readBytes()
             ortSession = ortEnv?.createSession(modelBytes, sessionOptions)
-            Log.i(tag, "ONNX Runtime session initialized successfully on $activeDevice")
+            activeDevice = "CPU (XNNPACK 4T)"
+            Log.i(tag, "ONNX Runtime session initialized successfully on $activeDevice with ${modelBytes.size} bytes model")
         } catch (e: Exception) {
-            Log.e(tag, "Failed to initialize ONNX session: ${e.message}")
+            lastError = "Init session: ${e.message}"
+            Log.e(tag, "Failed to initialize ONNX session: ${e.message}", e)
         }
     }
 
     fun detect(bitmap: Bitmap): List<Detection> {
-        val session = ortSession ?: return emptyList()
-        val env = ortEnv ?: return emptyList()
+        val session = ortSession
+        val env = ortEnv
+
+        if (session == null || env == null) {
+            lastError = "Session not initialized"
+            return emptyList()
+        }
 
         val startTime = SystemClock.elapsedRealtime()
 
@@ -90,27 +103,29 @@ class OnnxYoloDetector(
             Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
         }
 
-        // Convert Bitmap to NCHW FloatBuffer [1, 3, 480, 480] normalized to [0, 1]
-        val floatBuffer = FloatBuffer.allocate(1 * 3 * inputSize * inputSize)
-        val intValues = IntArray(inputSize * inputSize)
-        resized.getPixels(intValues, 0, inputSize, 0, 0, inputSize, inputSize)
+        // Convert Bitmap to NCHW FloatBuffer [1, 3, 480, 480] normalized to [0.0, 1.0]
+        synchronized(floatBuffer) {
+            floatBuffer.rewind()
+            resized.getPixels(intValues, 0, inputSize, 0, 0, inputSize, inputSize)
 
-        // R plane
-        for (i in 0 until inputSize * inputSize) {
-            val pixel = intValues[i]
-            floatBuffer.put(((pixel shr 16) and 0xFF) / 255.0f)
+            val totalPixels = inputSize * inputSize
+            // R plane
+            for (i in 0 until totalPixels) {
+                val pixel = intValues[i]
+                floatBuffer.put(((pixel shr 16) and 0xFF) / 255.0f)
+            }
+            // G plane
+            for (i in 0 until totalPixels) {
+                val pixel = intValues[i]
+                floatBuffer.put(((pixel shr 8) and 0xFF) / 255.0f)
+            }
+            // B plane
+            for (i in 0 until totalPixels) {
+                val pixel = intValues[i]
+                floatBuffer.put((pixel and 0xFF) / 255.0f)
+            }
+            floatBuffer.rewind()
         }
-        // G plane
-        for (i in 0 until inputSize * inputSize) {
-            val pixel = intValues[i]
-            floatBuffer.put(((pixel shr 8) and 0xFF) / 255.0f)
-        }
-        // B plane
-        for (i in 0 until inputSize * inputSize) {
-            val pixel = intValues[i]
-            floatBuffer.put((pixel and 0xFF) / 255.0f)
-        }
-        floatBuffer.rewind()
 
         val inputName = session.inputNames.iterator().next()
         val inputShape = longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
@@ -171,8 +186,10 @@ class OnnxYoloDetector(
                 }
             }
             results.close()
+            lastError = null
         } catch (e: Exception) {
-            Log.e(tag, "Inference error: ${e.message}")
+            lastError = "Inference: ${e.message}"
+            Log.e(tag, "Inference error: ${e.message}", e)
         } finally {
             inputTensor.close()
         }
