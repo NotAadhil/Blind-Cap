@@ -22,7 +22,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.blindcap.app.ai.Detection
-import com.blindcap.app.ai.TfliteYoloDetector
+import com.blindcap.app.ai.OnnxYoloDetector
 import com.blindcap.app.databinding.ActivityMainBinding
 import com.blindcap.app.engine.DecisionEngine
 import com.blindcap.app.engine.DepthEstimator
@@ -44,7 +44,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
 
     private lateinit var depthEstimator: DepthEstimator
-    private lateinit var detector: TfliteYoloDetector
+    private lateinit var detector: OnnxYoloDetector
     private lateinit var decisionEngine: DecisionEngine
     private lateinit var ttsManager: TtsManager
     private lateinit var ocrManager: OcrManager
@@ -64,7 +64,7 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         depthEstimator = DepthEstimator()
-        detector = TfliteYoloDetector(this, depthEstimator)
+        detector = OnnxYoloDetector(this, depthEstimator)
         decisionEngine = DecisionEngine()
         ocrManager = OcrManager()
 
