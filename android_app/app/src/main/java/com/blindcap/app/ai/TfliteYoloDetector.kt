@@ -3,21 +3,20 @@ package com.blindcap.app.ai
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
+import android.os.SystemClock
 import android.util.Log
 import com.blindcap.app.engine.DepthEstimator
-import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.support.common.FileUtil
-import org.tensorflow.lite.support.image.ImageProcessor
-import org.tensorflow.lite.support.image.TensorImage
-import org.tensorflow.lite.support.image.ops.ResizeOp
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
 import java.util.ArrayDeque
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 class TfliteYoloDetector(
     private val context: Context,
@@ -26,24 +25,34 @@ class TfliteYoloDetector(
     private val labelsFileName: String = "labels.txt"
 ) {
 
-    private val tag = "TfliteYoloDetector"
+    private val tag = "Yolo26nTflite"
     private var interpreter: Interpreter? = null
     private var gpuDelegate: GpuDelegate? = null
     private val labels = mutableListOf<String>()
 
     private val inputSize = 480
-    private val confThreshold = 0.28f
-    private val iouThreshold = 0.45f
+    private val confThreshold = 0.25f
 
-    var activeDevice: String = "CPU"
+    var activeDevice: String = "TFLite CPU (XNNPACK)"
     var lastInferenceMs: Float = 0f
+    var lastError: String? = null
 
-    // Confidence-weighted majority class smoothing buffer per track slot
+    // Pre-allocated direct FloatBuffer for NHWC input [1, 480, 480, 3]
+    private val inputDirectBuffer: ByteBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
+        order(ByteOrder.nativeOrder())
+    }
+    private val inputFloatBuffer: FloatBuffer = inputDirectBuffer.asFloatBuffer()
+    private val intValues = IntArray(inputSize * inputSize)
+
+    // Output shape for YOLO26n End-to-End: [1, 300, 6] -> [x1, y1, x2, y2, score, class_id]
+    private val outputBuffer: Array<Array<FloatArray>> = Array(1) { Array(300) { FloatArray(6) } }
+
     private val classHistoryMap = mutableMapOf<Int, ArrayDeque<Pair<String, Float>>>()
 
     init {
         loadLabels()
         initInterpreter()
+        printDiagnosticStartupBanner()
     }
 
     private fun loadLabels() {
@@ -54,200 +63,164 @@ class TfliteYoloDetector(
                 if (trimmed.isNotEmpty()) labels.add(trimmed)
             }
             reader.close()
-            Log.i(tag, "Loaded ${labels.size} labels from assets")
+            Log.i(tag, "Loaded ${labels.size} official COCO class labels from assets")
         } catch (e: Exception) {
-            Log.e(tag, "Error loading labels: ${e.message}")
+            lastError = "Label load: ${e.message}"
+            Log.e(tag, "Error loading labels: ${e.message}", e)
         }
     }
 
     private fun initInterpreter() {
         try {
-            val modelBuffer = FileUtil.loadMappedFile(context, modelFileName)
-            val options = Interpreter.Options()
-
-            // 1. Try GPU Delegate
-            try {
-                gpuDelegate = GpuDelegate()
-                options.addDelegate(gpuDelegate)
-                interpreter = Interpreter(modelBuffer, options)
-                activeDevice = "GPU (Mobile GPU)"
-                Log.i(tag, "TFLite initialized on GPU Delegate")
-                return
-            } catch (e: Exception) {
-                Log.w(tag, "GPU Delegate failed, falling back to multi-threaded CPU: ${e.message}")
+            val modelBytes = context.assets.open(modelFileName).readBytes()
+            val modelBuffer = ByteBuffer.allocateDirect(modelBytes.size).apply {
+                order(ByteOrder.nativeOrder())
+                put(modelBytes)
+                rewind()
             }
 
-            // 2. Multi-threaded CPU Fallback
-            options.setNumThreads(4)
+            val options = Interpreter.Options().apply {
+                setNumThreads(4)
+                setUseXNNPACK(true)
+            }
+
             interpreter = Interpreter(modelBuffer, options)
-            activeDevice = "CPU (4 Threads)"
-            Log.i(tag, "TFLite initialized on multi-threaded CPU")
+            activeDevice = "YOLO26n (TFLite XNNPACK 4T)"
+            Log.i(tag, "TensorFlow Lite interpreter successfully initialized with ${modelBytes.size} bytes model")
         } catch (e: Exception) {
-            Log.e(tag, "Failed to initialize TFLite interpreter: ${e.message}")
+            lastError = "Init TFLite: ${e.message}"
+            Log.e(tag, "Failed to initialize TFLite interpreter: ${e.message}", e)
+        }
+    }
+
+    private fun printDiagnosticStartupBanner() {
+        val interp = interpreter ?: return
+        try {
+            val inputTensor = interp.getInputTensor(0)
+            val outputTensor = interp.getOutputTensor(0)
+
+            val inputShapeStr = inputTensor.shape().joinToString("x")
+            val outputShapeStr = outputTensor.shape().joinToString("x")
+
+            Log.i(tag, "============================================================")
+            Log.i(tag, "YOLO26n TFLite MODEL DIAGNOSTIC")
+            Log.i(tag, "File: $modelFileName")
+            Log.i(tag, "Input shape: $inputShapeStr, Type: ${inputTensor.dataType()}")
+            Log.i(tag, "Output shape: $outputShapeStr, Type: ${outputTensor.dataType()}")
+            Log.i(tag, "Classes count: ${labels.size} (COCO official)")
+            Log.i(tag, "Architecture: YOLO26n End-to-End (NMS-Free)")
+            Log.i(tag, "Confidence threshold: $confThreshold")
+            Log.i(tag, "============================================================")
+        } catch (e: Exception) {
+            Log.w(tag, "Could not print model metadata: ${e.message}")
         }
     }
 
     fun detect(bitmap: Bitmap): List<Detection> {
-        val tflite = interpreter ?: return emptyList()
+        val interp = interpreter
+        if (interp == null) {
+            lastError = "Interpreter not initialized"
+            return emptyList()
+        }
 
-        val t0 = System.nanoTime()
+        val startTime = SystemClock.elapsedRealtime()
 
-        // 1. Preprocess: Resize bitmap to 480x480 with bilinear interpolation
-        val resized = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
-        val tensorImage = TensorImage(DataType.FLOAT32)
-        tensorImage.load(resized)
+        val resized = if (bitmap.width == inputSize && bitmap.height == inputSize) {
+            bitmap
+        } else {
+            Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
+        }
 
-        // Normalize to [0.0, 1.0]
-        val imageProcessor = ImageProcessor.Builder()
-            .add(ResizeOp(inputSize, inputSize, ResizeOp.ResizeMethod.BILINEAR))
-            .build()
-        val processedImage = imageProcessor.process(tensorImage)
+        // Convert Bitmap to NHWC FloatBuffer [1, 480, 480, 3] normalized to [0.0, 1.0]
+        synchronized(inputFloatBuffer) {
+            inputFloatBuffer.rewind()
+            resized.getPixels(intValues, 0, inputSize, 0, 0, inputSize, inputSize)
 
-        // 2. Run Inference
-        // Output tensor shape: [1, 300, 6] for End-to-End or [1, 84, 4725] for anchor format
-        val outputShape = tflite.getOutputTensor(0).shape()
-        val detections = mutableListOf<Detection>()
+            val totalPixels = inputSize * inputSize
+            for (i in 0 until totalPixels) {
+                val pixel = intValues[i]
+                val r = ((pixel shr 16) and 0xFF) / 255.0f
+                val g = ((pixel shr 8) and 0xFF) / 255.0f
+                val b = (pixel and 0xFF) / 255.0f
+                inputFloatBuffer.put(r)
+                inputFloatBuffer.put(g)
+                inputFloatBuffer.put(b)
+            }
+            inputFloatBuffer.rewind()
+        }
 
-        if (outputShape.size == 3 && outputShape[2] == 6) {
-            // Format A: End-to-End [1, N, 6] (x1, y1, x2, y2, score, classId)
-            val outputBuffer = Array(1) { Array(outputShape[1]) { FloatArray(6) } }
-            tflite.run(processedImage.buffer, outputBuffer)
+        val rawDetections = mutableListOf<Detection>()
 
-            val rawDetections = mutableListOf<Detection>()
-            for (row in outputBuffer[0]) {
+        try {
+            interp.run(inputDirectBuffer, outputBuffer)
+
+            val detections300 = outputBuffer[0]
+            for (i in 0 until 300) {
+                val row = detections300[i]
+                val x1 = row[0] / inputSize.toFloat()
+                val y1 = row[1] / inputSize.toFloat()
+                val x2 = row[2] / inputSize.toFloat()
+                val y2 = row[3] / inputSize.toFloat()
                 val score = row[4]
-                if (score < confThreshold) continue
-                val classId = row[5].toInt().coerceIn(0, max(0, labels.size - 1))
-                val rawClassName = labels.getOrElse(classId) { "object" }
+                val classId = row[5].roundToInt()
 
-                val x1Norm = (row[0] / inputSize).coerceIn(0f, 1f)
-                val y1Norm = (row[1] / inputSize).coerceIn(0f, 1f)
-                val x2Norm = (row[2] / inputSize).coerceIn(0f, 1f)
-                val y2Norm = (row[3] / inputSize).coerceIn(0f, 1f)
+                if (score >= confThreshold && classId in labels.indices) {
+                    val rawClassName = labels[classId]
+                    val left = max(0f, min(1f, x1))
+                    val top = max(0f, min(1f, y1))
+                    val right = max(0f, min(1f, x2))
+                    val bottom = max(0f, min(1f, y2))
 
-                if (x2Norm <= x1Norm || y2Norm <= y1Norm) continue
+                    val bbox = RectF(left, top, right, bottom)
+                    val cx = (left + right) / 2.0f
+                    val cy = (top + bottom) / 2.0f
+                    val areaRatio = bbox.width() * bbox.height()
 
-                val rect = RectF(x1Norm, y1Norm, x2Norm, y2Norm)
-                val cx = (x1Norm + x2Norm) / 2f
-                val cy = (y1Norm + y2Norm) / 2f
-                val areaRatio = (x2Norm - x1Norm) * (y2Norm - y1Norm)
-                val region = depthEstimator.classifyRegion(cx)
-                val distance = depthEstimator.estimateDistance(rawClassName, y2Norm - y1Norm)
+                    val smoothedClass = smoothClassLabel(i, rawClassName, score)
+                    val distanceM = depthEstimator.estimateDistance(smoothedClass, bbox.height())
+                    val region = depthEstimator.classifyRegion(cx)
 
-                rawDetections.add(
-                    Detection(
-                        className = rawClassName,
-                        classId = classId,
-                        confidence = score,
-                        bbox = rect,
-                        center = Pair(cx, cy),
-                        areaRatio = areaRatio,
-                        region = region,
-                        estimatedDistanceM = distance
+                    // Diagnostic logging for every verified detection
+                    Log.d(tag, "DETECTION: class_id=$classId, class_name=$smoothedClass, confidence=%.3f, box=[%.2f, %.2f, %.2f, %.2f], dist=%.1fm".format(score, left, top, right, bottom, distanceM))
+
+                    rawDetections.add(
+                        Detection(
+                            className = smoothedClass,
+                            classId = classId,
+                            confidence = score,
+                            bbox = bbox,
+                            center = Pair(cx, cy),
+                            areaRatio = areaRatio,
+                            region = region,
+                            estimatedDistanceM = distanceM
+                        )
                     )
-                )
-            }
-            detections.addAll(applyClassAwareNms(rawDetections))
-        } else if (outputShape.size == 3 && outputShape[1] >= 84) {
-            // Format B: Anchor Grid [1, 84, N] (cx, cy, w, h, class_probs[80])
-            val numAnchors = outputShape[2]
-            val outputBuffer = Array(1) { Array(outputShape[1]) { FloatArray(numAnchors) } }
-            tflite.run(processedImage.buffer, outputBuffer)
-
-            val rawDetections = mutableListOf<Detection>()
-            for (col in 0 until numAnchors) {
-                var maxScore = 0f
-                var bestClassId = -1
-
-                for (c in 4 until outputShape[1]) {
-                    val score = outputBuffer[0][c][col]
-                    if (score > maxScore) {
-                        maxScore = score
-                        bestClassId = c - 4
-                    }
-                }
-
-                if (maxScore < confThreshold || bestClassId < 0) continue
-
-                val cxPx = outputBuffer[0][0][col]
-                val cyPx = outputBuffer[0][1][col]
-                val wPx = outputBuffer[0][2][col]
-                val hPx = outputBuffer[0][3][col]
-
-                val x1Norm = ((cxPx - wPx / 2f) / inputSize).coerceIn(0f, 1f)
-                val y1Norm = ((cyPx - hPx / 2f) / inputSize).coerceIn(0f, 1f)
-                val x2Norm = ((cxPx + wPx / 2f) / inputSize).coerceIn(0f, 1f)
-                val y2Norm = ((cyPx + hPx / 2f) / inputSize).coerceIn(0f, 1f)
-
-                if (x2Norm <= x1Norm || y2Norm <= y1Norm) continue
-
-                val rawClassName = labels.getOrElse(bestClassId) { "object" }
-                val rect = RectF(x1Norm, y1Norm, x2Norm, y2Norm)
-                val cx = (x1Norm + x2Norm) / 2f
-                val cy = (y1Norm + y2Norm) / 2f
-                val areaRatio = (x2Norm - x1Norm) * (y2Norm - y1Norm)
-                val region = depthEstimator.classifyRegion(cx)
-                val distance = depthEstimator.estimateDistance(rawClassName, y2Norm - y1Norm)
-
-                rawDetections.add(
-                    Detection(
-                        className = rawClassName,
-                        classId = bestClassId,
-                        confidence = maxScore,
-                        bbox = rect,
-                        center = Pair(cx, cy),
-                        areaRatio = areaRatio,
-                        region = region,
-                        estimatedDistanceM = distance
-                    )
-                )
-            }
-            detections.addAll(applyClassAwareNms(rawDetections))
-        }
-
-        lastInferenceMs = (System.nanoTime() - t0) / 1_000_000.0f
-        return detections
-    }
-
-    private fun applyClassAwareNms(candidates: List<Detection>): List<Detection> {
-        val sorted = candidates.sortedByDescending { it.confidence }
-        val selected = mutableListOf<Detection>()
-
-        for (cand in sorted) {
-            var shouldKeep = true
-            for (sel in selected) {
-                // Class-aware: only suppress if same class! Overlapping different classes are preserved.
-                if (sel.classId == cand.classId) {
-                    val iou = calculateIoU(sel.bbox, cand.bbox)
-                    if (iou > iouThreshold) {
-                        shouldKeep = false
-                        break
-                    }
                 }
             }
-            if (shouldKeep) {
-                selected.add(cand)
-            }
+            lastError = null
+        } catch (e: Exception) {
+            lastError = "TFLite inference: ${e.message}"
+            Log.e(tag, "Inference error: ${e.message}", e)
         }
-        return selected
+
+        lastInferenceMs = (SystemClock.elapsedRealtime() - startTime).toFloat()
+        return rawDetections
     }
 
-    private fun calculateIoU(a: RectF, b: RectF): Float {
-        val interLeft = max(a.left, b.left)
-        val interTop = max(a.top, b.top)
-        val interRight = min(a.right, b.right)
-        val interBottom = min(a.bottom, b.bottom)
+    private fun smoothClassLabel(slot: Int, newClass: String, confidence: Float): String {
+        val history = classHistoryMap.getOrPut(slot) { ArrayDeque(5) }
+        if (history.size >= 5) history.removeFirst()
+        history.addLast(Pair(newClass, confidence))
 
-        if (interRight <= interLeft || interBottom <= interTop) return 0.0f
-        val interArea = (interRight - interLeft) * (interBottom - interTop)
-        val unionArea = (a.width() * a.height()) + (b.width() * b.height()) - interArea
-        return if (unionArea <= 0.0f) 0.0f else interArea / unionArea
+        val scoreMap = mutableMapOf<String, Float>()
+        for ((cls, conf) in history) {
+            scoreMap[cls] = (scoreMap[cls] ?: 0f) + conf
+        }
+        return scoreMap.maxByOrNull { it.value }?.key ?: newClass
     }
 
     fun close() {
         interpreter?.close()
         gpuDelegate?.close()
-        interpreter = null
-        gpuDelegate = null
     }
 }
