@@ -40,6 +40,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 enum class VideoInputSource {
     PHONE_CAMERA,
@@ -68,8 +69,20 @@ class MainActivity : AppCompatActivity() {
     private var currentSource = VideoInputSource.PHONE_CAMERA
     private var cameraProvider: ProcessCameraProvider? = null
 
-    private val isAnalyzing = AtomicBoolean(false)
-    private var lastFrameTime = 0L
+    // Decoupled Frame Transfer
+    private val latestFrameRef = AtomicReference<Bitmap?>(null)
+    private val isAiRunning = AtomicBoolean(true)
+    private var aiWorkerThread: Thread? = null
+
+    // FPS Measurement Instrumentation
+    private var cameraFrameCount = 0
+    private var lastCameraFpsTime = SystemClock.elapsedRealtime()
+    private var currentCameraFps = 0f
+
+    private var aiFrameCount = 0
+    private var lastAiFpsTime = SystemClock.elapsedRealtime()
+    private var currentAiFps = 0f
+
     private var latestBitmap: Bitmap? = null
     private var currentDetections: List<Detection> = emptyList()
 
@@ -91,10 +104,11 @@ class MainActivity : AppCompatActivity() {
         mjpegStreamReader = MjpegStreamReader(
             onFrameReceived = { bitmap ->
                 if (currentSource == VideoInputSource.ESP32_CAM) {
+                    measureCameraFps()
                     runOnUiThread {
                         binding.esp32StreamView.setImageBitmap(bitmap)
                     }
-                    processDirectBitmap(bitmap)
+                    latestFrameRef.set(bitmap)
                 }
             },
             onStatusChanged = { status ->
@@ -111,6 +125,7 @@ class MainActivity : AppCompatActivity() {
         setupGestures()
         setupActionButtons()
         setupTopBarControls()
+        startAiWorkerLoop()
 
         if (allPermissionsGranted()) {
             startCamera()
@@ -120,6 +135,85 @@ class MainActivity : AppCompatActivity() {
                 arrayOf(Manifest.permission.CAMERA),
                 cameraPermissionCode
             )
+        }
+    }
+
+    private fun startAiWorkerLoop() {
+        isAiRunning.set(true)
+        aiWorkerThread = Thread({
+            while (isAiRunning.get()) {
+                val frame = latestFrameRef.getAndSet(null)
+                if (frame != null) {
+                    processAiFrame(frame)
+                    measureAiFps()
+                } else {
+                    try {
+                        Thread.sleep(8) // Short sleep to yield CPU if no new frame
+                    } catch (_: InterruptedException) {
+                        break
+                    }
+                }
+            }
+        }, "BlindCap-AI-Worker").apply {
+            priority = Thread.NORM_PRIORITY + 2
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun processAiFrame(bitmap: Bitmap) {
+        latestBitmap = bitmap
+
+        // 1. Hardware Inference & Pre/Post Processing
+        val detections = detector.detect(bitmap)
+        currentDetections = detections
+
+        // 2. Decision Engine with Scale-Invariant Tracking & Zero-Repeat State Machine
+        val event = decisionEngine.evaluate(detections)
+
+        // 3. Dispatch Speech if warranted
+        if (event.warningText != null) {
+            ttsManager.speak(
+                text = event.warningText,
+                priority = event.speakPriority,
+                severity = event.severity
+            )
+        }
+
+        // 4. Update UI Overlay with Performance Breakdown
+        val sourceLabel = if (currentSource == VideoInputSource.PHONE_CAMERA) "Phone" else "ESP32"
+        val ttsStatus = if (ttsManager.isSpeaking) "SPEAKING" else "SILENT"
+
+        runOnUiThread {
+            binding.overlayView.cameraFps = currentCameraFps
+            binding.overlayView.aiFps = currentAiFps
+            binding.overlayView.timings = detector.lastTimings
+            binding.overlayView.activeDevice = "${detector.activeDevice} [$sourceLabel]"
+            binding.overlayView.ttsStatus = ttsStatus
+            binding.overlayView.errorMessage = detector.lastError
+            binding.overlayView.updateResults(detections, event)
+        }
+    }
+
+    private fun measureCameraFps() {
+        cameraFrameCount++
+        val now = SystemClock.elapsedRealtime()
+        val elapsed = now - lastCameraFpsTime
+        if (elapsed >= 1000L) {
+            currentCameraFps = (cameraFrameCount * 1000f) / elapsed
+            cameraFrameCount = 0
+            lastCameraFpsTime = now
+        }
+    }
+
+    private fun measureAiFps() {
+        aiFrameCount++
+        val now = SystemClock.elapsedRealtime()
+        val elapsed = now - lastAiFpsTime
+        if (elapsed >= 1000L) {
+            currentAiFps = (aiFrameCount * 1000f) / elapsed
+            aiFrameCount = 0
+            lastAiFpsTime = now
         }
     }
 
@@ -248,6 +342,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isAiRunning.set(false)
+        aiWorkerThread?.interrupt()
         mjpegStreamReader.stop()
         cameraExecutor.shutdown()
         detector.close()
@@ -296,73 +392,19 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        if (!isAnalyzing.compareAndSet(false, true)) {
-            imageProxy.close()
-            return
-        }
+        measureCameraFps()
 
         try {
             val bitmap = imageProxyToBitmap(imageProxy)
             if (bitmap != null) {
-                processBitmapInternal(bitmap)
+                // Non-blocking handoff: set latest frame atomically for the AI worker thread
+                latestFrameRef.set(bitmap)
             }
         } catch (e: Exception) {
-            Log.e(tag, "Error in image processing: ${e.message}")
+            Log.e(tag, "Error extracting image frame: ${e.message}")
         } finally {
+            // Immediately close imageProxy so CameraX buffer pool is NEVER starved!
             imageProxy.close()
-            isAnalyzing.set(false)
-        }
-    }
-
-    private fun processDirectBitmap(bitmap: Bitmap) {
-        if (!isAnalyzing.compareAndSet(false, true)) {
-            return
-        }
-
-        try {
-            processBitmapInternal(bitmap)
-        } catch (e: Exception) {
-            Log.e(tag, "Error processing direct bitmap: ${e.message}")
-        } finally {
-            isAnalyzing.set(false)
-        }
-    }
-
-    private fun processBitmapInternal(bitmap: Bitmap) {
-        latestBitmap = bitmap
-
-        // 1. Run YOLO26n TFLite Detection
-        val detections = detector.detect(bitmap)
-        currentDetections = detections
-
-        // 2. Evaluate Decision Engine with Alert Hierarchy
-        val event = decisionEngine.evaluate(detections)
-
-        // 3. Dispatch Speech if warranted
-        if (event.warningText != null) {
-            ttsManager.speak(
-                text = event.warningText,
-                priority = event.speakPriority,
-                severity = event.severity
-            )
-        }
-
-        // 4. Update UI Overlay
-        val now = SystemClock.elapsedRealtime()
-        val dt = (now - lastFrameTime).coerceAtLeast(1)
-        lastFrameTime = now
-        val cameraFps = 1000f / dt
-        val inferenceFps = if (detector.lastInferenceMs > 0) 1000f / detector.lastInferenceMs else 0f
-
-        val sourceLabel = if (currentSource == VideoInputSource.PHONE_CAMERA) "Phone Cam" else "ESP32-CAM"
-
-        runOnUiThread {
-            binding.overlayView.cameraFps = cameraFps
-            binding.overlayView.inferenceFps = inferenceFps
-            binding.overlayView.inferenceMs = detector.lastInferenceMs
-            binding.overlayView.activeDevice = "${detector.activeDevice} [$sourceLabel]"
-            binding.overlayView.errorMessage = detector.lastError
-            binding.overlayView.updateResults(detections, event)
         }
     }
 

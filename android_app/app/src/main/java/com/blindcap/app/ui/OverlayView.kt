@@ -7,9 +7,8 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
-import androidx.core.content.ContextCompat
-import com.blindcap.app.R
 import com.blindcap.app.ai.Detection
+import com.blindcap.app.ai.DetectionTimings
 import com.blindcap.app.engine.HazardEvent
 import kotlin.math.max
 
@@ -22,11 +21,11 @@ class OverlayView @JvmOverloads constructor(
     private var detections: List<Detection> = emptyList()
     private var hazardEvent: HazardEvent? = null
 
-    var cameraFps: Float = 60.0f
-    var inferenceFps: Float = 20.0f
-    var inferenceMs: Float = 50.0f
-    var activeDevice: String = "GPU (Mobile NPU)"
-    var ttsMode: String = "NORMAL"
+    var cameraFps: Float = 0.0f
+    var aiFps: Float = 0.0f
+    var timings: DetectionTimings = DetectionTimings()
+    var activeDevice: String = "Initializing..."
+    var ttsStatus: String = "IDLE"
     var errorMessage: String? = null
 
     private val boxPaint = Paint().apply {
@@ -37,18 +36,24 @@ class OverlayView @JvmOverloads constructor(
 
     private val textPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 34f
+        textSize = 32f
         isAntiAlias = true
         setShadowLayer(4f, 2f, 2f, Color.BLACK)
     }
 
+    private val smallTextPaint = Paint().apply {
+        color = Color.parseColor("#E0E0E0")
+        textSize = 26f
+        isAntiAlias = true
+    }
+
     private val hudBgPaint = Paint().apply {
-        color = Color.parseColor("#B0151515")
+        color = Color.parseColor("#C0101010")
         style = Paint.Style.FILL
     }
 
     private val corridorPaint = Paint().apply {
-        color = Color.parseColor("#80FFFFFF")
+        color = Color.parseColor("#60FFFFFF")
         strokeWidth = 3f
         style = Paint.Style.STROKE
         isAntiAlias = true
@@ -66,20 +71,19 @@ class OverlayView @JvmOverloads constructor(
         val w = width.toFloat()
         val h = height.toFloat()
 
-        // 1. Draw Corridor Boundary Lines (Left: 35%, Right: 65%)
+        // 1. Draw Walking Corridor Boundaries (Left: 35%, Right: 65%)
         val leftLineX = w * 0.35f
         val rightLineX = w * 0.65f
         canvas.drawLine(leftLineX, 0f, leftLineX, h, corridorPaint)
         canvas.drawLine(rightLineX, 0f, rightLineX, h, corridorPaint)
 
-        // 2. Draw Object Bounding Boxes
+        // 2. Draw Object Bounding Boxes & Distance Labels
         for (det in detections) {
             val left = det.bbox.left * w
             val top = det.bbox.top * h
             val right = det.bbox.right * w
             val bottom = det.bbox.bottom * h
 
-            // Color-blind friendly severity colors
             boxPaint.color = when (det.region) {
                 "center" -> if (det.estimatedDistanceM <= 1.8f) Color.RED else Color.parseColor("#FFA500")
                 else -> Color.parseColor("#00FF88")
@@ -87,32 +91,38 @@ class OverlayView @JvmOverloads constructor(
 
             canvas.drawRect(left, top, right, bottom, boxPaint)
 
-            // Label above box
             val distLabel = "%.1fm".format(det.estimatedDistanceM)
             val confLabel = "${(det.confidence * 100).toInt()}%"
             val labelText = "${det.className.uppercase()} $confLabel ($distLabel)"
-            canvas.drawText(labelText, left + 4f, max(top - 10f, 40f), textPaint)
+            canvas.drawText(labelText, left + 4f, max(top - 10f, 35f), textPaint)
         }
 
-        // 3. Draw Semi-Transparent Accessibility HUD (Top Left)
-        val hudWidth = 380f
-        val hudHeight = 260f
-        canvas.drawRoundRect(20f, 40f, 20f + hudWidth, 40f + hudHeight, 16f, 16f, hudBgPaint)
+        // 3. Draw Performance Diagnostic HUD (Top Left, below Top Bar)
+        val hudWidth = 420f
+        val hudHeight = 280f
+        val startX = 20f
+        val startY = 140f
 
-        var yPos = 80f
-        val lineGap = 36f
+        canvas.drawRoundRect(startX, startY, startX + hudWidth, startY + hudHeight, 16f, 16f, hudBgPaint)
 
-        canvas.drawText("BLIND CAP MOBILE", 40f, yPos, textPaint)
+        var yPos = startY + 36f
+        val lineGap = 34f
+
+        canvas.drawText("BLIND CAP PERFORMANCE", startX + 16f, yPos, textPaint)
         yPos += lineGap
-        canvas.drawText("Video FPS: %.0f".format(cameraFps), 40f, yPos, textPaint)
+        canvas.drawText("Camera: %.0f FPS  |  AI: %.1f FPS".format(cameraFps, aiFps), startX + 16f, yPos, textPaint)
         yPos += lineGap
-        canvas.drawText("AI FPS: %.1f (%.0f ms)".format(inferenceFps, inferenceMs), 40f, yPos, textPaint)
+        canvas.drawText("Latency: %.0fms (Pre:%.0f Inf:%.0f Post:%.0f)".format(
+            timings.totalMs, timings.preprocessMs, timings.inferenceMs, timings.postprocessMs
+        ), startX + 16f, yPos, smallTextPaint)
         yPos += lineGap
-        canvas.drawText("Engine: $activeDevice", 40f, yPos, textPaint)
+        canvas.drawText("Backend: $activeDevice", startX + 16f, yPos, smallTextPaint)
         yPos += lineGap
-        canvas.drawText("Objects in View: ${detections.size}", 40f, yPos, textPaint)
+        canvas.drawText("Visible Objects: ${detections.size} | TTS: $ttsStatus", startX + 16f, yPos, smallTextPaint)
         yPos += lineGap
-        val statusText = errorMessage ?: (hazardEvent?.warningText ?: "Path is clear.")
-        canvas.drawText("Status: ${statusText.take(24)}", 40f, yPos, textPaint)
+
+        val statusText = errorMessage ?: (hazardEvent?.warningText ?: "Scene stable (silent)")
+        val truncated = if (statusText.length > 28) statusText.take(28) + "..." else statusText
+        canvas.drawText("Event: $truncated", startX + 16f, yPos, smallTextPaint)
     }
 }

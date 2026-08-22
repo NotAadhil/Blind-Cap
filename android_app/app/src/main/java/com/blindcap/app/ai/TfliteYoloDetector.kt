@@ -22,6 +22,13 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+data class DetectionTimings(
+    val preprocessMs: Float = 0f,
+    val inferenceMs: Float = 0f,
+    val postprocessMs: Float = 0f,
+    val totalMs: Float = 0f
+)
+
 class TfliteYoloDetector(
     private val context: Context,
     private val depthEstimator: DepthEstimator,
@@ -38,10 +45,10 @@ class TfliteYoloDetector(
     private val confThreshold = 0.25f
 
     var activeDevice: String = "Initializing..."
-    var lastInferenceMs: Float = 0f
+    var lastTimings: DetectionTimings = DetectionTimings()
     var lastError: String? = null
 
-    // High performance TFLite Support ImageProcessor (runs in native C++ SIMD)
+    // High performance TFLite Support ImageProcessor (native C++ SIMD)
     private val imageProcessor = ImageProcessor.Builder()
         .add(ResizeOp(inputSize, inputSize, ResizeOp.ResizeMethod.BILINEAR))
         .add(NormalizeOp(0f, 255f))
@@ -56,7 +63,6 @@ class TfliteYoloDetector(
     init {
         loadLabels()
         initInterpreter()
-        printDiagnosticStartupBanner()
     }
 
     private fun loadLabels() {
@@ -114,30 +120,6 @@ class TfliteYoloDetector(
         }
     }
 
-    private fun printDiagnosticStartupBanner() {
-        val interp = interpreter ?: return
-        try {
-            val inputTensor = interp.getInputTensor(0)
-            val outputTensor = interp.getOutputTensor(0)
-
-            val inputShapeStr = inputTensor.shape().joinToString("x")
-            val outputShapeStr = outputTensor.shape().joinToString("x")
-
-            Log.i(tag, "============================================================")
-            Log.i(tag, "YOLO26n TFLite MODEL DIAGNOSTIC")
-            Log.i(tag, "File: $modelFileName")
-            Log.i(tag, "Input shape: $inputShapeStr, Type: ${inputTensor.dataType()}")
-            Log.i(tag, "Output shape: $outputShapeStr, Type: ${outputTensor.dataType()}")
-            Log.i(tag, "Classes count: ${labels.size} (COCO official)")
-            Log.i(tag, "Active Engine: $activeDevice")
-            Log.i(tag, "Architecture: YOLO26n End-to-End (NMS-Free)")
-            Log.i(tag, "Confidence threshold: $confThreshold")
-            Log.i(tag, "============================================================")
-        } catch (e: Exception) {
-            Log.w(tag, "Could not print model metadata: ${e.message}")
-        }
-    }
-
     fun detect(bitmap: Bitmap): List<Detection> {
         val interp = interpreter
         if (interp == null) {
@@ -145,16 +127,20 @@ class TfliteYoloDetector(
             return emptyList()
         }
 
-        val startTime = SystemClock.elapsedRealtime()
+        val t0 = SystemClock.elapsedRealtimeNanos()
         val rawDetections = mutableListOf<Detection>()
 
         try {
-            // Fast Native C++ SIMD Preprocessing with TensorImage
+            // 1. Preprocessing (Native C++ SIMD)
             tensorImage.load(bitmap)
             val processedImage = imageProcessor.process(tensorImage)
+            val t1 = SystemClock.elapsedRealtimeNanos()
 
+            // 2. Hardware Inference
             interp.run(processedImage.buffer, outputBuffer)
+            val t2 = SystemClock.elapsedRealtimeNanos()
 
+            // 3. Postprocessing & Filtering
             val detections300 = outputBuffer[0]
             val invSize = 1.0f / inputSize.toFloat()
 
@@ -199,13 +185,20 @@ class TfliteYoloDetector(
                     )
                 )
             }
+            val t3 = SystemClock.elapsedRealtimeNanos()
+
+            val preMs = (t1 - t0) / 1_000_000f
+            val infMs = (t2 - t1) / 1_000_000f
+            val postMs = (t3 - t2) / 1_000_000f
+            val totalMs = (t3 - t0) / 1_000_000f
+
+            lastTimings = DetectionTimings(preMs, infMs, postMs, totalMs)
             lastError = null
         } catch (e: Exception) {
             lastError = "TFLite inference: ${e.message}"
             Log.e(tag, "Inference error: ${e.message}", e)
         }
 
-        lastInferenceMs = (SystemClock.elapsedRealtime() - startTime).toFloat()
         return rawDetections
     }
 

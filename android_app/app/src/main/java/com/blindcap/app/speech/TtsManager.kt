@@ -1,28 +1,20 @@
 package com.blindcap.app.speech
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
-import android.os.Build
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
-import java.util.PriorityQueue
 import java.util.concurrent.ConcurrentHashMap
 
 data class SpeechMessage(
     val priority: Int, // Higher number = higher urgency
     val text: String,
     val severity: String, // "CRITICAL", "WARNING", "CAUTION", "INFO"
-    val timestamp: Long = System.currentTimeMillis()
-) : Comparable<SpeechMessage> {
-    override fun compareTo(other: SpeechMessage): Int {
-        // Max-heap: higher priority comes first
-        return other.priority.compareTo(this.priority)
-    }
-}
+    val timestampMs: Long = SystemClock.elapsedRealtime(),
+    val maxAgeMs: Long = 2500L // Messages older than 2.5s are considered stale and dropped
+)
 
 class TtsManager(private val context: Context, private val onReadyCallback: (() -> Unit)? = null) :
     TextToSpeech.OnInitListener {
@@ -31,10 +23,13 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     private var tts: TextToSpeech? = null
     private var isInitialized = false
 
-    private val speechQueue = PriorityQueue<SpeechMessage>()
-    private val spokenKeys = ConcurrentHashMap<String, Long>()
-    private var isSpeaking = false
-    private var currentPriority = 0
+    private var pendingMessage: SpeechMessage? = null
+    private var currentlySpeakingText: String? = null
+    private var currentPriority: Int = 0
+    private var lastSpokenTime: Long = 0L
+
+    var isSpeaking: Boolean = false
+        private set
 
     var isMuted: Boolean = false
     var isQuietMode: Boolean = false
@@ -51,7 +46,7 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
                 Log.e(tag, "Language US not supported on this device TTS engine")
             } else {
                 isInitialized = true
-                tts?.setSpeechRate(1.08f) // Slightly faster for efficient listening
+                tts?.setSpeechRate(1.10f) // Optimized natural speech rate for low latency
                 setupUtteranceListener()
                 Log.i(tag, "TextToSpeech initialized successfully")
                 onReadyCallback?.invoke()
@@ -68,32 +63,59 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
             }
 
             override fun onDone(utteranceId: String?) {
-                isSpeaking = false
-                currentPriority = 0
-                processNextInQueue()
+                handleSpeechFinished()
             }
 
             override fun onError(utteranceId: String?) {
-                isSpeaking = false
-                currentPriority = 0
-                processNextInQueue()
+                handleSpeechFinished()
             }
         })
     }
 
     @Synchronized
+    private fun handleSpeechFinished() {
+        isSpeaking = false
+        currentlySpeakingText = null
+        currentPriority = 0
+
+        // Check if there is a pending fresh message
+        val next = pendingMessage
+        pendingMessage = null
+
+        if (next != null) {
+            val age = SystemClock.elapsedRealtime() - next.timestampMs
+            if (age <= next.maxAgeMs) {
+                executeSpeech(next)
+            } else {
+                Log.i(tag, "Discarded stale TTS message (${age}ms old): ${next.text}")
+            }
+        }
+    }
+
+    @Synchronized
     fun speak(text: String, priority: Int, severity: String) {
-        if (isMuted) return
+        if (isMuted || !isInitialized) return
         if (isQuietMode && (severity == "INFO" || severity == "CAUTION")) return
 
-        val msg = SpeechMessage(priority, text, severity)
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
 
-        if (severity == "CRITICAL" || severity == "WARNING") {
-            lastImportantWarning = text
+        // Deduplication: Do not repeat identical speech if currently playing or played within last 2.5 seconds
+        val now = SystemClock.elapsedRealtime()
+        if (trimmed == currentlySpeakingText && (now - lastSpokenTime < 2500L)) {
+            return
         }
 
-        // Sub-50ms Instant Preemption: if message is higher priority than what is currently playing, cut off immediately!
+        val msg = SpeechMessage(priority, trimmed, severity)
+
+        if (severity == "CRITICAL" || severity == "WARNING") {
+            lastImportantWarning = trimmed
+        }
+
+        // 1. Instant Preemption: If higher priority (or urgent danger), cut off current speech immediately!
         if (isSpeaking && priority > currentPriority) {
+            Log.i(tag, "Preempting lower priority speech for: $trimmed")
+            pendingMessage = null
             tts?.stop()
             isSpeaking = false
             currentPriority = priority
@@ -101,10 +123,12 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
             return
         }
 
+        // 2. If idle, speak immediately
         if (!isSpeaking) {
             executeSpeech(msg)
         } else {
-            speechQueue.offer(msg)
+            // 3. Stale queue prevention: Replace any pending message with only the newest message
+            pendingMessage = msg
         }
     }
 
@@ -112,19 +136,12 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     private fun executeSpeech(msg: SpeechMessage) {
         if (!isInitialized || isMuted) return
         isSpeaking = true
+        currentlySpeakingText = msg.text
         currentPriority = msg.priority
-        val utteranceId = "utterance_${System.currentTimeMillis()}"
-        tts?.speak(msg.text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
-    }
+        lastSpokenTime = SystemClock.elapsedRealtime()
 
-    @Synchronized
-    private fun processNextInQueue() {
-        if (!isSpeaking && speechQueue.isNotEmpty()) {
-            val next = speechQueue.poll()
-            if (next != null) {
-                executeSpeech(next)
-            }
-        }
+        val utteranceId = "utterance_${SystemClock.elapsedRealtime()}"
+        tts?.speak(msg.text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
     }
 
     fun repeatLast() {
@@ -133,9 +150,10 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     }
 
     fun stop() {
-        speechQueue.clear()
+        pendingMessage = null
         tts?.stop()
         isSpeaking = false
+        currentlySpeakingText = null
         currentPriority = 0
     }
 
