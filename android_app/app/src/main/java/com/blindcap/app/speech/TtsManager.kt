@@ -1,4 +1,4 @@
-﻿package com.blindcap.app.speech
+package com.blindcap.app.speech
 
 import android.content.Context
 import android.media.AudioAttributes
@@ -53,7 +53,7 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
                 isInitialized = true
                 tts?.setSpeechRate(1.08f) // Slightly faster for efficient listening
                 setupUtteranceListener()
-                Log.info(tag, "TextToSpeech initialized successfully")
+                Log.i(tag, "TextToSpeech initialized successfully")
                 onReadyCallback?.invoke()
             }
         } else {

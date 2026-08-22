@@ -1,4 +1,4 @@
-﻿package com.blindcap.app
+package com.blindcap.app
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -192,23 +192,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
-        val bitmap = Bitmap.createBitmap(
-            imageProxy.width,
-            imageProxy.height,
-            Bitmap.Config.ARGB_8888
-        )
-        val planes = imageProxy.planes
-        val buffer = planes[0].buffer
-        bitmap.copyPixelsFromBuffer(buffer)
-
-        // Rotate bitmap according to sensor rotation
-        val rotationDegrees = imageProxy.imageInfo.rotationDegrees
-        return if (rotationDegrees != 0) {
-            val matrix = Matrix()
-            matrix.postRotate(rotationDegrees.toFloat())
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-        } else {
-            bitmap
+        return try {
+            val bitmap = imageProxy.toBitmap()
+            val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+            if (rotationDegrees != 0) {
+                val matrix = Matrix()
+                matrix.postRotate(rotationDegrees.toFloat())
+                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            } else {
+                bitmap
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "toBitmap conversion failed: ${e.message}")
+            null
         }
     }
 
