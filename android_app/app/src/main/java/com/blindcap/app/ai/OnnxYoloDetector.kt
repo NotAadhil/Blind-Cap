@@ -30,7 +30,7 @@ class OnnxYoloDetector(
     private val labels = mutableListOf<String>()
 
     private val inputSize = 480
-    private val confThreshold = 0.28f
+    private val confThreshold = 0.25f
 
     var activeDevice: String = "CPU"
     var lastInferenceMs: Float = 0f
@@ -126,17 +126,17 @@ class OnnxYoloDetector(
                 val outputShape = outputTensor.info.shape
                 // End-to-End shape [1, 300, 6]
                 if (outputShape.size == 3 && outputShape[2] == 6L) {
-                    val array = outputTensor.value as Array<Array<FloatArray>>
+                    val fb = outputTensor.floatBuffer
                     val numDetections = outputShape[1].toInt()
 
                     for (i in 0 until numDetections) {
-                        val row = array[0][i]
-                        val x1 = row[0] / inputSize
-                        val y1 = row[1] / inputSize
-                        val x2 = row[2] / inputSize
-                        val y2 = row[3] / inputSize
-                        val score = row[4]
-                        val classId = row[5].toInt()
+                        val offset = i * 6
+                        val x1 = fb.get(offset + 0) / inputSize
+                        val y1 = fb.get(offset + 1) / inputSize
+                        val x2 = fb.get(offset + 2) / inputSize
+                        val y2 = fb.get(offset + 3) / inputSize
+                        val score = fb.get(offset + 4)
+                        val classId = fb.get(offset + 5).toInt()
 
                         if (score >= confThreshold && classId in labels.indices) {
                             val rawClassName = labels[classId]

@@ -120,7 +120,6 @@ class MainActivity : AppCompatActivity() {
 
             val imageAnalysis = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .build()
 
             imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
@@ -144,8 +143,6 @@ class MainActivity : AppCompatActivity() {
             imageProxy.close()
             return
         }
-
-        val tStart = SystemClock.elapsedRealtime()
 
         try {
             val bitmap = imageProxyToBitmap(imageProxy)
@@ -203,8 +200,49 @@ class MainActivity : AppCompatActivity() {
                 bitmap
             }
         } catch (e: Exception) {
-            Log.e(tag, "toBitmap conversion failed: ${e.message}")
+            Log.e(tag, "toBitmap conversion failed: ${e.message}, trying fallback")
+            try {
+                yuvToBitmapFallback(imageProxy)
+            } catch (e2: Exception) {
+                Log.e(tag, "Fallback also failed: ${e2.message}")
+                null
+            }
+        }
+    }
+
+    private fun yuvToBitmapFallback(imageProxy: ImageProxy): Bitmap? {
+        val yBuffer = imageProxy.planes[0].buffer
+        val uBuffer = imageProxy.planes[1].buffer
+        val vBuffer = imageProxy.planes[2].buffer
+
+        val ySize = yBuffer.remaining()
+        val uSize = uBuffer.remaining()
+        val vSize = vBuffer.remaining()
+
+        val nv21 = ByteArray(ySize + uSize + vSize)
+        yBuffer.get(nv21, 0, ySize)
+        vBuffer.get(nv21, ySize, vSize)
+        uBuffer.get(nv21, ySize + vSize, uSize)
+
+        val yuvImage = android.graphics.YuvImage(
+            nv21,
+            android.graphics.ImageFormat.NV21,
+            imageProxy.width,
+            imageProxy.height,
             null
+        )
+        val out = java.io.ByteArrayOutputStream()
+        yuvImage.compressToJpeg(android.graphics.Rect(0, 0, imageProxy.width, imageProxy.height), 90, out)
+        val imageBytes = out.toByteArray()
+        val bitmap = android.graphics.BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+
+        val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+        return if (rotationDegrees != 0 && bitmap != null) {
+            val matrix = Matrix()
+            matrix.postRotate(rotationDegrees.toFloat())
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        } else {
+            bitmap
         }
     }
 
