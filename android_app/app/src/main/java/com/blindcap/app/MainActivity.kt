@@ -1,6 +1,8 @@
 package com.blindcap.app
 
 import android.Manifest
+import android.content.Context
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
@@ -10,7 +12,10 @@ import android.util.Log
 import android.view.GestureDetector
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
+import android.widget.EditText
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
@@ -26,6 +31,7 @@ import com.blindcap.app.ai.TfliteYoloDetector
 import com.blindcap.app.databinding.ActivityMainBinding
 import com.blindcap.app.engine.DecisionEngine
 import com.blindcap.app.engine.DepthEstimator
+import com.blindcap.app.net.MjpegStreamReader
 import com.blindcap.app.ocr.OcrManager
 import com.blindcap.app.speech.TtsManager
 import kotlinx.coroutines.Dispatchers
@@ -35,19 +41,32 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
+enum class VideoInputSource {
+    PHONE_CAMERA,
+    ESP32_CAM
+}
+
 class MainActivity : AppCompatActivity() {
 
     private val tag = "BlindCapMainActivity"
     private val cameraPermissionCode = 1001
+    private val prefsName = "BlindCapPrefs"
+    private val keyStreamUrl = "esp32_stream_url"
+    private val defaultStreamUrl = "http://192.168.4.1:81/stream"
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
+    private lateinit var prefs: SharedPreferences
 
     private lateinit var depthEstimator: DepthEstimator
     private lateinit var detector: TfliteYoloDetector
     private lateinit var decisionEngine: DecisionEngine
     private lateinit var ttsManager: TtsManager
     private lateinit var ocrManager: OcrManager
+    private lateinit var mjpegStreamReader: MjpegStreamReader
+
+    private var currentSource = VideoInputSource.PHONE_CAMERA
+    private var cameraProvider: ProcessCameraProvider? = null
 
     private val isAnalyzing = AtomicBoolean(false)
     private var lastFrameTime = 0L
@@ -61,6 +80,7 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        prefs = getSharedPreferences(prefsName, Context.MODE_PRIVATE)
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         depthEstimator = DepthEstimator()
@@ -68,12 +88,29 @@ class MainActivity : AppCompatActivity() {
         decisionEngine = DecisionEngine()
         ocrManager = OcrManager()
 
+        mjpegStreamReader = MjpegStreamReader(
+            onFrameReceived = { bitmap ->
+                if (currentSource == VideoInputSource.ESP32_CAM) {
+                    runOnUiThread {
+                        binding.esp32StreamView.setImageBitmap(bitmap)
+                    }
+                    processDirectBitmap(bitmap)
+                }
+            },
+            onStatusChanged = { status ->
+                runOnUiThread {
+                    binding.txtStreamStatus.text = status
+                }
+            }
+        )
+
         ttsManager = TtsManager(this) {
             ttsManager.speak("Blind Cap ready.", priority = 50, severity = "INFO")
         }
 
         setupGestures()
         setupActionButtons()
+        setupTopBarControls()
 
         if (allPermissionsGranted()) {
             startCamera()
@@ -84,6 +121,92 @@ class MainActivity : AppCompatActivity() {
                 cameraPermissionCode
             )
         }
+    }
+
+    private fun setupTopBarControls() {
+        updateSourceUi()
+
+        binding.btnSourceToggle.setOnClickListener {
+            if (currentSource == VideoInputSource.PHONE_CAMERA) {
+                switchToEsp32Cam()
+            } else {
+                switchToPhoneCamera()
+            }
+        }
+
+        binding.btnStreamSettings.setOnClickListener {
+            showStreamSettingsDialog()
+        }
+    }
+
+    private fun updateSourceUi() {
+        if (currentSource == VideoInputSource.PHONE_CAMERA) {
+            binding.btnSourceToggle.text = "Source: Phone Cam"
+            binding.btnSourceToggle.setBackgroundColor(0xFF333333.toInt())
+            binding.viewFinder.visibility = View.VISIBLE
+            binding.esp32StreamView.visibility = View.GONE
+            binding.txtStreamStatus.text = ""
+        } else {
+            binding.btnSourceToggle.text = "Source: ESP32-CAM"
+            binding.btnSourceToggle.setBackgroundColor(0xFF994400.toInt())
+            binding.viewFinder.visibility = View.GONE
+            binding.esp32StreamView.visibility = View.VISIBLE
+        }
+    }
+
+    private fun switchToEsp32Cam() {
+        currentSource = VideoInputSource.ESP32_CAM
+        updateSourceUi()
+
+        // Unbind phone camera to conserve battery
+        try {
+            cameraProvider?.unbindAll()
+        } catch (_: Exception) {}
+
+        decisionEngine.reset()
+        val url = prefs.getString(keyStreamUrl, defaultStreamUrl) ?: defaultStreamUrl
+        mjpegStreamReader.start(url)
+        ttsManager.speak("Switched to external ESP 32 camera stream.", priority = 60, severity = "INFO")
+        Toast.makeText(this, "Connecting to ESP32: $url", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun switchToPhoneCamera() {
+        currentSource = VideoInputSource.PHONE_CAMERA
+        updateSourceUi()
+
+        // Stop ESP32 stream
+        mjpegStreamReader.stop()
+        decisionEngine.reset()
+
+        // Rebind Phone Camera
+        startCamera()
+        ttsManager.speak("Switched to phone camera.", priority = 60, severity = "INFO")
+    }
+
+    private fun showStreamSettingsDialog() {
+        val currentUrl = prefs.getString(keyStreamUrl, defaultStreamUrl) ?: defaultStreamUrl
+        val input = EditText(this).apply {
+            setText(currentUrl)
+            setSelection(text.length)
+            hint = "http://192.168.4.1:81/stream"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("ESP32-CAM Stream URL")
+            .setMessage("Enter the MJPEG stream URL of your ESP32-CAM (e.g. http://192.168.4.1:81/stream or http://192.168.1.50/stream):")
+            .setView(input)
+            .setPositiveButton("Save & Connect") { _, _ ->
+                val newUrl = input.text.toString().trim()
+                if (newUrl.isNotEmpty()) {
+                    prefs.edit().putString(keyStreamUrl, newUrl).apply()
+                    Toast.makeText(this, "Saved: $newUrl", Toast.LENGTH_SHORT).show()
+                    if (currentSource == VideoInputSource.ESP32_CAM) {
+                        mjpegStreamReader.start(newUrl)
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun setupGestures() {
@@ -125,6 +248,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        mjpegStreamReader.stop()
         cameraExecutor.shutdown()
         detector.close()
         ocrManager.close()
@@ -132,9 +256,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startCamera() {
+        if (currentSource != VideoInputSource.PHONE_CAMERA) return
+
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
+            cameraProvider = cameraProviderFuture.get()
+            val provider = cameraProvider ?: return@addListener
 
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
@@ -152,8 +279,10 @@ class MainActivity : AppCompatActivity() {
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
             try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(this, cameraSelector, preview, imageAnalysis)
+                provider.unbindAll()
+                if (currentSource == VideoInputSource.PHONE_CAMERA) {
+                    provider.bindToLifecycle(this, cameraSelector, preview, imageAnalysis)
+                }
             } catch (exc: Exception) {
                 Log.e(tag, "Camera binding failed: ${exc.message}")
             }
@@ -162,6 +291,11 @@ class MainActivity : AppCompatActivity() {
 
     @androidx.annotation.OptIn(ExperimentalGetImage::class)
     private fun processImageProxy(imageProxy: ImageProxy) {
+        if (currentSource != VideoInputSource.PHONE_CAMERA) {
+            imageProxy.close()
+            return
+        }
+
         if (!isAnalyzing.compareAndSet(false, true)) {
             imageProxy.close()
             return
@@ -170,45 +304,65 @@ class MainActivity : AppCompatActivity() {
         try {
             val bitmap = imageProxyToBitmap(imageProxy)
             if (bitmap != null) {
-                latestBitmap = bitmap
-
-                // 1. Run YOLO26n TFLite Detection
-                val detections = detector.detect(bitmap)
-                currentDetections = detections
-
-                // 2. Evaluate Decision Engine with Alert Hierarchy
-                val event = decisionEngine.evaluate(detections)
-
-                // 3. Dispatch Speech if warranted
-                if (event.warningText != null) {
-                    ttsManager.speak(
-                        text = event.warningText,
-                        priority = event.speakPriority,
-                        severity = event.severity
-                    )
-                }
-
-                // 4. Update UI Overlay
-                val now = SystemClock.elapsedRealtime()
-                val dt = (now - lastFrameTime).coerceAtLeast(1)
-                lastFrameTime = now
-                val cameraFps = 1000f / dt
-                val inferenceFps = if (detector.lastInferenceMs > 0) 1000f / detector.lastInferenceMs else 0f
-
-                runOnUiThread {
-                    binding.overlayView.cameraFps = cameraFps
-                    binding.overlayView.inferenceFps = inferenceFps
-                    binding.overlayView.inferenceMs = detector.lastInferenceMs
-                    binding.overlayView.activeDevice = detector.activeDevice
-                    binding.overlayView.errorMessage = detector.lastError
-                    binding.overlayView.updateResults(detections, event)
-                }
+                processBitmapInternal(bitmap)
             }
         } catch (e: Exception) {
             Log.e(tag, "Error in image processing: ${e.message}")
         } finally {
             imageProxy.close()
             isAnalyzing.set(false)
+        }
+    }
+
+    private fun processDirectBitmap(bitmap: Bitmap) {
+        if (!isAnalyzing.compareAndSet(false, true)) {
+            return
+        }
+
+        try {
+            processBitmapInternal(bitmap)
+        } catch (e: Exception) {
+            Log.e(tag, "Error processing direct bitmap: ${e.message}")
+        } finally {
+            isAnalyzing.set(false)
+        }
+    }
+
+    private fun processBitmapInternal(bitmap: Bitmap) {
+        latestBitmap = bitmap
+
+        // 1. Run YOLO26n TFLite Detection
+        val detections = detector.detect(bitmap)
+        currentDetections = detections
+
+        // 2. Evaluate Decision Engine with Alert Hierarchy
+        val event = decisionEngine.evaluate(detections)
+
+        // 3. Dispatch Speech if warranted
+        if (event.warningText != null) {
+            ttsManager.speak(
+                text = event.warningText,
+                priority = event.speakPriority,
+                severity = event.severity
+            )
+        }
+
+        // 4. Update UI Overlay
+        val now = SystemClock.elapsedRealtime()
+        val dt = (now - lastFrameTime).coerceAtLeast(1)
+        lastFrameTime = now
+        val cameraFps = 1000f / dt
+        val inferenceFps = if (detector.lastInferenceMs > 0) 1000f / detector.lastInferenceMs else 0f
+
+        val sourceLabel = if (currentSource == VideoInputSource.PHONE_CAMERA) "Phone Cam" else "ESP32-CAM"
+
+        runOnUiThread {
+            binding.overlayView.cameraFps = cameraFps
+            binding.overlayView.inferenceFps = inferenceFps
+            binding.overlayView.inferenceMs = detector.lastInferenceMs
+            binding.overlayView.activeDevice = "${detector.activeDevice} [$sourceLabel]"
+            binding.overlayView.errorMessage = detector.lastError
+            binding.overlayView.updateResults(detections, event)
         }
     }
 
@@ -248,7 +402,7 @@ class MainActivity : AppCompatActivity() {
     private fun triggerOcrReading() {
         val bitmap = latestBitmap
         if (bitmap == null) {
-            ttsManager.speak("Camera initializing. Please wait.", priority = 70, severity = "INFO")
+            ttsManager.speak("Video source initializing. Please wait.", priority = 70, severity = "INFO")
             return
         }
         ttsManager.speak("Reading text...", priority = 75, severity = "INFO")
@@ -277,7 +431,9 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == cameraPermissionCode) {
             if (allPermissionsGranted()) {
-                startCamera()
+                if (currentSource == VideoInputSource.PHONE_CAMERA) {
+                    startCamera()
+                }
             } else {
                 Toast.makeText(this, "Camera permission is required.", Toast.LENGTH_LONG).show()
                 finish()
