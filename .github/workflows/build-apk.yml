@@ -1,4 +1,4 @@
-﻿name: Build and Release Android APK
+name: Build and Release Android APK
 
 on:
   push:
@@ -22,13 +22,14 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Set execute permissions on Gradle wrapper
-        run: chmod +x android_app/gradlew || true
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
 
       - name: Build Android APK
         working-directory: ./android_app
-        run: |
-          gradle assembleDebug --stacktrace || ./gradlew assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
