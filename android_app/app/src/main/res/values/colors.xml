@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="hud_bg">#B0181818</color>
+    <color name="critical_red">#FFFF2222</color>
+    <color name="warning_orange">#FFFF8800</color>
+    <color name="caution_yellow">#FFFFD700</color>
+    <color name="info_green">#FF00FF88</color>
+    <color name="corridor_line">#80FFFFFF</color>
+</resources>
