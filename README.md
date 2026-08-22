@@ -1,4 +1,4 @@
-﻿# Blind Cap: Real-Time Assistive Vision and Spatial Audio Prototype
+# Blind Cap: Real-Time Assistive Vision and Spatial Audio Prototype
 
 ## Safety Disclaimer
 This project is an experimental research prototype, NOT a certified medical or mobility device. It cannot guarantee detection of every obstacle. Absence of a detection does not mean that the path is clear or safe. Never rely on this software as your primary or sole method of navigation. Always use standard mobility aids, canes, guide dogs, and certified orientation techniques.
@@ -11,15 +11,23 @@ Blind Cap is an intelligent, real-time assistive vision system designed to help 
 The software captures video from a camera mounted on a wearable cap or webcam, detects objects across 80 categories, tracks their physical positions and metric distances, and provides concise, event-driven voice feedback using text-to-speech.
 
 ### Key Features
-- High-Accuracy Object Detection: Powered by YOLO26m (Medium FP16) accelerated with Intel OpenVINO on Intel Iris Xe graphics and CPUs.
-- Dynamic Multi-Object Scene Evaluation: Does not latch onto single objects. Continuously evaluates all active obstacles and describes them with natural relative positions (for example: "Person on the right and cell phone on the left").
+- High-Accuracy Object Detection: Powered by YOLO26m (Medium FP16) accelerated with Intel OpenVINO on PC, and YOLO26n TFLite on Android.
+- Dynamic Multi-Object Scene Evaluation: Does not latch onto single objects. Continuously evaluates all active obstacles, counts instances, and describes them with natural relative positions (e.g. "Two people detected: one on the left and one on the right. Chair in the center").
 - Spatial Walking Corridor and Danger Zones: Divides the field of view into Left, Center (Walking Path), and Right zones. Immediately announces high-priority urgent stop warnings when obstacles enter the close walking corridor (1.8 meters and 0.9 meters).
 - Metric Distance Estimation: Uses object reference heights and camera focal models to estimate real-world distances in meters.
 - Event-Driven Voice Output: Announces new objects, departures, region shifts, and significant distance changes, but remains completely silent when the scene is stationary to prevent audio clutter.
-- On-Demand OCR Text Reader: Reads printed signs, notices, packaging, labels, or computer screens aloud on demand (press T).
-- On-Demand Scene Summary: Generates a complete comprehensive description of the entire visual scene on demand (press Space or C).
-- Decoupled 60 FPS Viewfinder: Runs camera capture and user interface rendering asynchronously from the AI inference thread to ensure a smooth 60 FPS experience with zero stutter.
-- 1-Click Launch: Comes with batch and PowerShell scripts (run.bat and run.ps1) that set up the virtual environment, install requirements, export models, and launch the application in a single step on any Windows computer.
+- On-Demand OCR Text Reader: Reads printed signs, notices, packaging, labels, or computer screens aloud on demand.
+- On-Demand Scene Summary: Generates a complete comprehensive description of the entire visual scene on demand.
+- Decoupled Viewfinder Pipeline: Runs camera capture and user interface rendering asynchronously from the AI worker thread for smooth real-time performance with zero lag.
+- Android Mobile App & ESP32-CAM Streaming: Includes a full standalone Android APK supporting both the phone camera and external wireless ESP32-CAM MJPEG streams over WiFi.
+
+---
+
+## Android Mobile Application & Releases
+
+Download the latest pre-compiled Android APK directly from GitHub Releases:
+- [**Download Latest Android APK (v1.0.17)**](https://github.com/NotAadhil/Blind-Cap/releases/download/v1.0.17/app-debug.apk)
+- [**View Full Release History & Changelog (CHANGELOG.md)**](file:///D:/Projects/Project%20Azure/CHANGELOG.md)
 
 ---
 
