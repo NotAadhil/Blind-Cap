@@ -1,18 +1,20 @@
 package com.blindcap.app.speech
 
 import android.content.Context
+import android.os.Bundle
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 
 data class SpeechMessage(
     val priority: Int, // Higher number = higher urgency
     val text: String,
     val severity: String, // "CRITICAL", "WARNING", "CAUTION", "INFO"
     val timestampMs: Long = SystemClock.elapsedRealtime(),
-    val maxAgeMs: Long = 2500L // Messages older than 2.5s are considered stale and dropped
+    val maxAgeMs: Long = 3000L
 )
 
 class TtsManager(private val context: Context, private val onReadyCallback: (() -> Unit)? = null) :
@@ -27,9 +29,14 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     private var currentPriority: Int = 0
     private var lastSpokenTime: Long = 0L
 
+    private val utteranceIdCounter = AtomicLong(1L)
+    @Volatile
+    private var activeUtteranceId: String? = null
+
     var isSpeaking: Boolean = false
         private set
 
+    @Volatile
     var isOcrActive: Boolean = false
         private set
 
@@ -48,7 +55,7 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
                 Log.e(tag, "Language US not supported on this device TTS engine")
             } else {
                 isInitialized = true
-                tts?.setSpeechRate(1.10f) // Optimized natural speech rate for low latency
+                tts?.setSpeechRate(1.08f)
                 setupUtteranceListener()
                 Log.i(tag, "TextToSpeech initialized successfully")
                 onReadyCallback?.invoke()
@@ -61,23 +68,38 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     private fun setupUtteranceListener() {
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
-                isSpeaking = true
+                if (utteranceId == activeUtteranceId) {
+                    isSpeaking = true
+                }
             }
 
             override fun onDone(utteranceId: String?) {
-                handleSpeechFinished()
+                handleUtteranceFinished(utteranceId)
             }
 
+            @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
-                handleSpeechFinished()
+                handleUtteranceFinished(utteranceId)
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                Log.e(tag, "TTS utterance error ($errorCode) for ID: $utteranceId")
+                handleUtteranceFinished(utteranceId)
             }
         })
     }
 
     @Synchronized
-    private fun handleSpeechFinished() {
+    private fun handleUtteranceFinished(utteranceId: String?) {
+        // Only handle completion for the CURRENT active utterance, ignore callbacks from previously cancelled ones!
+        if (utteranceId != activeUtteranceId && activeUtteranceId != null) {
+            Log.d(tag, "Ignored completion of old/cancelled utterance: $utteranceId (active: $activeUtteranceId)")
+            return
+        }
+
         isSpeaking = false
         isOcrActive = false
+        activeUtteranceId = null
         currentlySpeakingText = null
         currentPriority = 0
 
@@ -113,7 +135,7 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
         isSpeaking = false
         currentPriority = 85 // OCR priority above routine detections (50-70)
 
-        val msg = SpeechMessage(priority = 85, text = trimmed, severity = "INFO", maxAgeMs = 10000L)
+        val msg = SpeechMessage(priority = 85, text = trimmed, severity = "INFO", maxAgeMs = 15000L)
         executeSpeech(msg)
     }
 
@@ -172,13 +194,37 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     @Synchronized
     private fun executeSpeech(msg: SpeechMessage) {
         if (!isInitialized || isMuted) return
+
         isSpeaking = true
         currentlySpeakingText = msg.text
         currentPriority = msg.priority
         lastSpokenTime = SystemClock.elapsedRealtime()
 
-        val utteranceId = "utterance_${SystemClock.elapsedRealtime()}"
-        tts?.speak(msg.text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        val id = "utt_${utteranceIdCounter.getAndIncrement()}_${SystemClock.elapsedRealtime()}"
+        activeUtteranceId = id
+
+        // Split very long OCR texts into chunks if over 500 characters to prevent TTS engine dropouts
+        val text = msg.text
+        if (text.length > 500) {
+            val chunks = text.chunked(400)
+            for (i in chunks.indices) {
+                val chunk = chunks[i]
+                val chunkId = "${id}_$i"
+                if (i == chunks.lastIndex) {
+                    activeUtteranceId = chunkId
+                }
+                val queueMode = if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                val result = tts?.speak(chunk, queueMode, null, chunkId)
+                if (result != TextToSpeech.SUCCESS) {
+                    Log.e(tag, "TTS speak failed for chunk $i (code: $result)")
+                }
+            }
+        } else {
+            val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
+            if (result != TextToSpeech.SUCCESS) {
+                Log.e(tag, "TTS speak failed (code: $result)")
+            }
+        }
     }
 
     fun repeatLast() {
@@ -189,6 +235,7 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     fun stop() {
         pendingMessage = null
         isOcrActive = false
+        activeUtteranceId = null
         tts?.stop()
         isSpeaking = false
         currentlySpeakingText = null

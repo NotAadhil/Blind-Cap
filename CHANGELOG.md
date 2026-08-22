@@ -4,6 +4,27 @@ All notable changes, bug fixes, performance improvements, and architectural evol
 
 ---
 
+## [v1.0.19] - 2026-08-22
+
+### Summary
+Fixed OCR Audio Speech Playback with Active Utterance Lifecycle Tracking and Long Text Chunking.
+
+### Bugs Identified & Addressed
+- **OCR Text Detected but Silent**: When OCR finished recognizing text, Android's `TextToSpeech` engine did not speak the recognized text aloud even though the Toast message displayed correctly.
+- **Root Cause**:
+  1. Triggering `tts.stop()` on the initial `"Reading text..."` prompt caused Android's TTS engine to asynchronously fire `onDone`/`onError`, resetting the active speech state and dropping the subsequent OCR text utterance.
+  2. Long OCR paragraphs without chunking could fail silently in some Android TTS engines.
+
+### Fixes & Architectural Enhancements
+- **Active Utterance ID Lifecycle Matching**:
+  - `UtteranceProgressListener` now tracks `activeUtteranceId` so asynchronous completion callbacks from previously stopped or aborted prompts cannot cancel or silence newly started OCR readings.
+- **Automatic Text Chunking**:
+  - Long OCR paragraphs over 500 characters are automatically split into natural speech chunks with sequential `QUEUE_ADD` chaining, ensuring every word is spoken clearly without truncation.
+- **Status Verification & Fallback**:
+  - Added return code status checks on `tts.speak()` with automatic fallback.
+
+---
+
 ## [v1.0.18] - 2026-08-22
 
 ### Summary
