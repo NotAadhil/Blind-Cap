@@ -1,389 +1,138 @@
-# Blind Cap — Assistive Vision Prototype
+﻿# Blind Cap: Real-Time Assistive Vision and Spatial Audio Prototype
 
-> **⚠️ SAFETY DISCLAIMER**: This is an **experimental research prototype**, NOT a certified mobility aid. It cannot guarantee obstacle detection. **"No detection" does NOT mean "path is safe."** Never rely on this system as your sole means of navigation. Always use established mobility techniques, a cane, or a guide dog.
-
----
-
-## What Is Blind Cap?
-
-Blind Cap is a real-time computer-vision assistant that:
-
-1. Captures video from a webcam.
-2. Detects objects using **YOLO26n** (a fast, lightweight AI model).
-3. Determines whether objects are in your walking path.
-4. Estimates relative urgency using visual heuristics.
-5. Prioritises the most important hazard.
-6. Gives **short spoken warnings** through your speakers or headphones.
-7. Prevents repetitive speech spam with smart cooldowns.
-8. Maintains a smooth camera display with diagnostic overlays.
-
-### Long-Term Vision
-
-```
-Camera on wearable cap  →  Raspberry Pi  →  Wi-Fi  →  PC (AI)  →  Speech  →  Bluetooth earphones
-```
-
-**This version** runs entirely on a Windows PC using the built-in webcam. The modular architecture means the webcam can later be swapped for a Raspberry Pi camera stream without rewriting the AI, hazard, or TTS systems.
+## Safety Disclaimer
+This project is an experimental research prototype, NOT a certified medical or mobility device. It cannot guarantee detection of every obstacle. Absence of a detection does not mean that the path is clear or safe. Never rely on this software as your primary or sole method of navigation. Always use standard mobility aids, canes, guide dogs, and certified orientation techniques.
 
 ---
 
-## Current Limitations
+## Overview
+Blind Cap is an intelligent, real-time assistive vision system designed to help visually impaired individuals perceive their surroundings and navigate obstacles safely.
 
-- Only detects objects the pretrained COCO model knows (80 classes).
-- Distance is estimated from bounding-box size — **not real depth measurement**.
-- Cannot detect potholes, stairs, curbs, or transparent obstacles (glass).
-- Does not work in complete darkness.
-- Speech is English only (Windows SAPI5).
-- **This is NOT a substitute for proper mobility training or safety equipment.**
+The software captures video from a camera mounted on a wearable cap or webcam, detects objects across 80 categories, tracks their physical positions and metric distances, and provides concise, event-driven voice feedback using text-to-speech.
 
----
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                     BLIND CAP                            │
-│                                                          │
-│  ┌──────────┐   ┌──────────┐   ┌────────────────────┐   │
-│  │  Camera   │──→│ Detector │──→│  Decision Engine   │   │
-│  │ (threaded)│   │ OpenVINO │   │  Hazard States     │   │
-│  └──────────┘   │ YOLO26n  │   │  Focus Selection   │   │
-│                  └──────────┘   │  Warning Cooldowns  │   │
-│                                 └─────────┬──────────┘   │
-│                                           │              │
-│  ┌──────────┐                  ┌──────────▼──────────┐   │
-│  │ Visualizer│←────────────────│   TTS Engine        │   │
-│  │   HUD     │                 │   Priority Queue    │   │
-│  └──────────┘                  │   SAPI5 Worker      │   │
-│                                 └────────────────────┘   │
-└──────────────────────────────────────────────────────────┘
-```
+### Key Features
+- High-Accuracy Object Detection: Powered by YOLO26m (Medium FP16) accelerated with Intel OpenVINO on Intel Iris Xe graphics and CPUs.
+- Dynamic Multi-Object Scene Evaluation: Does not latch onto single objects. Continuously evaluates all active obstacles and describes them with natural relative positions (for example: "Person on the right and cell phone on the left").
+- Spatial Walking Corridor and Danger Zones: Divides the field of view into Left, Center (Walking Path), and Right zones. Immediately announces high-priority urgent stop warnings when obstacles enter the close walking corridor (1.8 meters and 0.9 meters).
+- Metric Distance Estimation: Uses object reference heights and camera focal models to estimate real-world distances in meters.
+- Event-Driven Voice Output: Announces new objects, departures, region shifts, and significant distance changes, but remains completely silent when the scene is stationary to prevent audio clutter.
+- On-Demand OCR Text Reader: Reads printed signs, notices, packaging, labels, or computer screens aloud on demand (press T).
+- On-Demand Scene Summary: Generates a complete comprehensive description of the entire visual scene on demand (press Space or C).
+- Decoupled 60 FPS Viewfinder: Runs camera capture and user interface rendering asynchronously from the AI inference thread to ensure a smooth 60 FPS experience with zero stutter.
+- 1-Click Launch: Comes with batch and PowerShell scripts (run.bat and run.ps1) that set up the virtual environment, install requirements, export models, and launch the application in a single step on any Windows computer.
 
 ---
 
-## Quick Start Guide
+## Hardware and System Requirements
+- Operating System: Windows 10 or Windows 11 (64-bit).
+- Python: Python 3.10, 3.11, or 3.12.
+- Camera: Built-in webcam, external USB camera, or network video stream.
+- Accelerator (Recommended): Intel Core processor with Intel Iris Xe Graphics, Intel Arc GPU, or modern multi-core CPU.
 
-### 1. Install Python
+---
 
-Download **Python 3.11+** from [python.org](https://www.python.org/downloads/).
+## 1-Click Quick Start (Windows)
 
-During installation, **check "Add Python to PATH"**.
+### Option 1: Double-Click Batch File
+1. Clone or download the repository:
+   ```bash
+   git clone https://github.com/NotAadhil/Blind-Cap.git
+   cd Blind-Cap
+   ```
+2. Double-click the file `run.bat`.
+3. The script will automatically create a Python virtual environment (.venv), install all dependencies, export the YOLO26m model for OpenVINO acceleration if needed, and open the live camera interface.
 
-Verify in PowerShell:
-
+### Option 2: PowerShell
+Run the following commands in PowerShell:
 ```powershell
-python --version
+git clone https://github.com/NotAadhil/Blind-Cap.git
+cd Blind-Cap
+.\run.ps1
 ```
 
-### 2. Create a Virtual Environment
+---
 
-Open PowerShell and navigate to the project folder:
+## Manual Installation and Usage
 
+### 1. Set Up Environment
 ```powershell
-cd "d:\Projects\Project Azure"
 python -m venv .venv
-```
-
-### 3. Activate the Virtual Environment
-
-```powershell
 .\.venv\Scripts\Activate.ps1
-```
-
-> **If you get a script execution error**, run this first:
-> ```powershell
-> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-> ```
-
-### 4. Install Dependencies
-
-```powershell
 pip install -r requirements.txt
 ```
 
-This installs:
-- `openvino` — Intel inference engine
-- `ultralytics` — YOLO model framework
-- `opencv-python` — Video capture and display
-- `pyttsx3` — Text-to-speech (Windows SAPI5)
-- `numpy`, `pyyaml` — Data processing
-- `pywin32` — Windows COM support for TTS threading
-- `pytest` — Unit testing
-
-### 5. Check Intel GPU Visibility
-
-```powershell
-python -c "from openvino import Core; c = Core(); print(c.available_devices)"
-```
-
-Expected output (with Intel Iris Xe):
-```
-['CPU', 'GPU']
-```
-
-If you only see `['CPU']`, your Intel GPU drivers may need updating. Visit [Intel Driver Support](https://www.intel.com/content/www/us/en/support/detect.html).
-
-### 6. Export the YOLO26n Model to OpenVINO
-
-This step converts the model for Intel hardware. **Run once:**
-
+### 2. Export Model (First Run Only)
+Export the YOLO26m model to OpenVINO FP16 format for hardware acceleration:
 ```powershell
 python export_model.py
 ```
 
-This creates `models/yolo26n_openvino/` containing the optimised model files.
-
-For better GPU performance (FP16):
-```powershell
-python export_model.py --half --force
-```
-
-### 7. Run Hardware Diagnostics
-
-```powershell
-python tools/hardware_check.py
-```
-
-This checks Python, OpenCV, OpenVINO, GPU, webcam, and TTS.
-
-### 8. Test the TTS System
-
-**Critical step** — run this before the main app:
-
-```powershell
-python tools/test_tts.py
-```
-
-You should hear 5 complete sentences. If speech stops after one word or freezes, there is a TTS issue to resolve before proceeding.
-
-### 9. Run the Benchmark
-
-```powershell
-python tools/benchmark.py
-```
-
-Compares CPU vs GPU inference speed.
-
-### 10. Run Blind Cap
-
+### 3. Run the Application
 ```powershell
 python main.py
 ```
 
-With options:
+Optional command-line arguments:
+- `--model`: Select model variant (default: `yolo26m`, options: `yolo26m`, `yolo26s`, `yolo26n`).
+- `--device`: Select OpenVINO device (default: `GPU`, options: `GPU`, `CPU`, `AUTO`).
+- `--camera`: Specify camera index (default: `0`).
+- `--mute`: Start with voice output muted.
+- `--debug`: Enable verbose diagnostic logging.
 
-```powershell
-python main.py --device GPU --camera 0 --debug
-python main.py --mute                          # start silent
-python main.py --device CPU                    # force CPU inference
+---
+
+## Interactive Hotkeys and Controls
+
+| Key | Action | Description |
+| :--- | :--- | :--- |
+| `T` | Read Text (OCR) | Captures visible text or signs and reads them aloud. |
+| `Space` or `C` | Full Scene Summary | Speaks a complete descriptive summary of the entire visual scene. |
+| `V` or `Tab` | Switch Camera | Cycles to the next available camera input (index 0, 1, 2, etc.). |
+| `M` | Mute / Unmute | Toggles all voice announcements on or off. |
+| `S` | Quiet Mode | Silences routine informational announcements, keeping only urgent safety warnings. |
+| `R` | Repeat Last Warning | Repeats the most recent important safety announcement. |
+| `D` | Debug Overlay | Toggles detailed detection logs in the console. |
+| `B` | Benchmark Overlay | Toggles real-time inference latency and FPS benchmarks on the HUD. |
+| `Q` or `ESC` | Quit | Gracefully releases all hardware resources and closes the application. |
+
+---
+
+## System Architecture
+
+```
+Camera Input (Webcam / USB / Wireless)
+            |
+            v
+[OpenCVCamera Thread] (Non-blocking capture buffer)
+            |
+            v
+[AsyncVisionPipeline] (Decoupled background worker)
+  |-- OpenVINODetector (YOLO26m FP16 on Intel GPU/CPU)
+  |-- DepthEstimator (Monocular metric distance estimation)
+  |-- MotionFilter (Ego-motion compensation)
+  |-- DecisionEngine (Spatial tracking and change detection)
+  |-- TTSEngine (Windows SAPI5 voice output)
+  |-- OCRReader (Windows Native OCR text extraction)
+            |
+            v
+[Visualizer] (High-speed 60 FPS HUD overlay and GUI display)
 ```
 
 ---
 
-## Keyboard Controls
-
-| Key       | Action                    |
-|-----------|---------------------------|
-| `Q` / `ESC` | Quit                   |
-| `M`       | Mute / Unmute speech      |
-| `S`       | Toggle Quiet mode         |
-| `R`       | Repeat last warning       |
-| `D`       | Toggle Debug logging      |
-| `B`       | Toggle Benchmark overlay  |
-
-**Quiet mode** suppresses INFO and most CAUTION alerts but allows WARNING and CRITICAL alerts through.
-
----
-
-## Configuration
-
-All settings are in [`config.py`](config.py). Key parameters:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `MODEL_NAME` | `"yolo26n.pt"` | YOLO model to use |
-| `OPENVINO_DEVICE` | `"GPU"` | Inference device (`GPU`, `CPU`, `AUTO`) |
-| `CAMERA_INDEX` | `0` | Webcam device index |
-| `CAMERA_WIDTH` | `640` | Capture width |
-| `CAMERA_HEIGHT` | `480` | Capture height |
-| `CONFIDENCE_THRESHOLD` | `0.45` | Minimum detection confidence |
-| `PATH_LEFT_RATIO` | `0.30` | Walking corridor left boundary |
-| `PATH_RIGHT_RATIO` | `0.70` | Walking corridor right boundary |
-| `PERSISTENCE_FRAMES` | `3` | Frames before a detection is "stable" |
-| `MIN_HAZARD_AREA_RATIO` | `0.03` | Minimum size to trigger a hazard |
-| `WARNING_COOLDOWN` | `5.0` | Seconds between repeated warnings |
-| `CRITICAL_COOLDOWN` | `3.0` | Seconds between critical alerts |
-| `TTS_ENABLED` | `True` | Enable/disable speech |
-| `TTS_RATE` | `175` | Speech speed (words per minute) |
-| `TTS_MODE` | `"NORMAL"` | `NORMAL`, `MINIMAL`, or `URGENT` |
-
----
-
-## How the Hazard System Works
-
-### Walking Path Model
-
-The camera view is divided into three vertical zones:
-
-```
-┌──────────┬────────────────┬──────────┐
-│   LEFT   │  WALKING PATH  │  RIGHT   │
-│  0–30%   │    30–70%      │ 70–100%  │
-└──────────┴────────────────┴──────────┘
-```
-
-Only objects in the **centre corridor** are evaluated as potential hazards.
-
-### Hazard Scoring
-
-Each detected object gets a multi-factor score:
-
-- **Class priority** — cars score higher than bottles
-- **Confidence** — high-confidence detections score higher
-- **Path overlap** — more overlap with the corridor = higher score
-- **Size** — larger bounding box = visually closer (heuristic, not real depth)
-- **Vertical position** — objects at the bottom of the frame are likely closer
-- **Persistence** — objects seen for multiple frames score higher
-- **Approach** — growing bounding-box area suggests approaching
-
-### Hazard States
-
-Each tracked object moves through a state machine:
-
-```
-NEW → STABLE → CLOSER → CRITICAL → CLEARED
-```
-
-- **NEW**: First detected, waiting for persistence confirmation
-- **STABLE**: Confirmed detection, initial warning spoken
-- **CLOSER**: Bounding box is growing (approaching heuristic)
-- **CRITICAL**: Very large or high-priority — urgent warning
-- **CLEARED**: Object disappeared
-
-### Priority Levels
-
-| Level | Examples | Response |
-|-------|----------|----------|
-| **CRITICAL** | Car, bus, truck directly ahead | "STOP. Car ahead." |
-| **WARNING** | Person, bicycle, chair in path | "Person ahead." |
-| **CAUTION** | Partial overlap, distant object | Spoken only in NORMAL mode |
-| **INFO** | Side objects, background | Displayed only, not spoken |
-
----
-
-## Running Tests
-
+## Verification and Testing
+The project includes a comprehensive automated test suite covering all modules:
 ```powershell
 python -m pytest tests/ -v
 ```
-
-Tests cover:
-- **Decision engine**: regions, persistence, cooldowns, priority, approach detection, focus selection, state machine
-- **TTS queue**: message ordering, deduplication, mute/quiet, shutdown
-- **Detector utilities**: letterbox resizing, region classification
-
----
-
-## Troubleshooting
-
-### "No module named 'openvino'"
-```powershell
-pip install openvino
-```
-
-### "Camera not found"
-- Check webcam connection
-- Try different camera index: `python main.py --camera 1`
-- Check Windows Settings → Privacy → Camera
-
-### GPU not detected
-- Install latest Intel GPU drivers
-- Verify: `python -c "from openvino import Core; print(Core().available_devices)"`
-- The app will automatically fall back to CPU
-
-### TTS freezes or speaks only one word
-- Test independently: `python tools/test_tts.py`
-- Ensure `pywin32` is installed: `pip install pywin32`
-- Try: `pip install pyttsx3==2.71` (known-stable version)
-
-### Model not found
-```powershell
-python export_model.py
-```
-
-### "ModuleNotFoundError" on tools/
-Tools must be run from the project root:
-```powershell
-cd "d:\Projects\Project Azure"
-python tools/test_tts.py
-```
-
----
-
-## Project Structure
-
-```
-blind-cap/
-│
-├── main.py                  # Application entry point
-├── config.py                # All configuration parameters
-├── camera.py                # Webcam capture (threaded)
-├── detector.py              # OpenVINO YOLO inference
-├── decision_engine.py       # Hazard analysis & state machine
-├── tts.py                   # Text-to-speech (priority queue + SAPI5)
-├── visualization.py         # HUD rendering & bounding boxes
-├── hardware.py              # System diagnostics
-├── logger.py                # Logging module
-├── export_model.py          # Model export tool
-│
-├── models/
-│   └── yolo26n_openvino/    # Exported OpenVINO model
-│
-├── tools/
-│   ├── test_tts.py          # TTS acceptance test
-│   ├── benchmark.py         # CPU vs GPU benchmark
-│   └── hardware_check.py    # Hardware diagnostics
-│
-├── tests/
-│   ├── test_decision_engine.py
-│   ├── test_tts_queue.py
-│   └── test_detector_utils.py
-│
-├── logs/                    # Runtime log files
-├── requirements.txt
-├── .gitignore
-└── README.md
-```
-
----
-
-## Future: Raspberry Pi Architecture
-
-The planned wearable system:
-
-```
-[Raspberry Pi]              [Windows PC]
-Camera → JPEG stream  →  →  OpenVINO + YOLO26n
-                              ↓
-                           Decision Engine
-                              ↓
-                           Warning text/event
-                              ↓
-Audio ← Bluetooth  ←  ←  ←  Speech
-```
-
-The PC remains the heavy AI computer. The Pi handles camera, networking, and audio output. The current codebase is designed so that only `camera.py` needs a new `RaspberryPiStream` implementation — all other modules stay unchanged.
-
-Future features (architecture prepared but not implemented):
-- **OCR**: Read signs and text
-- **Depth estimation**: Real distance measurement
-- **Pothole detection**: Custom-trained model
-- **Scene description**: Contextual environment summaries
+All 87 unit and integration tests verify:
+- Spatial tracking and region classification.
+- Dynamic multi-object grouping and relative spatial formatting.
+- Multi-tier danger zone escalation and hysteresis stability.
+- Thread-safe priority voice queuing and non-blocking interruption.
+- Hardware diagnostics and sensor fallback.
 
 ---
 
 ## License
-
-This is an experimental research project.
-
-**Do not deploy this as a safety-critical system without proper validation, certification, and liability assessment.**
+This project is licensed under the MIT License. See the LICENSE file for details.
