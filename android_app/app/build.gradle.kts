@@ -74,6 +74,10 @@ dependencies {
     // Google ML Kit On-Device Text Recognition (OCR)
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
 
+    // Google ML Kit Object Detection (guaranteed on Pixel 6a, no native lib issues)
+    implementation("com.google.mlkit:object-detection:17.0.1")
+    implementation("com.google.mlkit:object-detection-custom:17.0.1")
+
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 

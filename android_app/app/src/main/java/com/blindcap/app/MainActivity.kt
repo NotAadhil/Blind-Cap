@@ -22,7 +22,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.blindcap.app.ai.Detection
-import com.blindcap.app.ai.OnnxYoloDetector
+import com.blindcap.app.ai.MlKitObjectDetector
 import com.blindcap.app.databinding.ActivityMainBinding
 import com.blindcap.app.engine.DecisionEngine
 import com.blindcap.app.engine.DepthEstimator
@@ -44,7 +44,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
 
     private lateinit var depthEstimator: DepthEstimator
-    private lateinit var detector: OnnxYoloDetector
+    private lateinit var detector: MlKitObjectDetector
     private lateinit var decisionEngine: DecisionEngine
     private lateinit var ttsManager: TtsManager
     private lateinit var ocrManager: OcrManager
@@ -64,7 +64,7 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         depthEstimator = DepthEstimator()
-        detector = OnnxYoloDetector(this, depthEstimator)
+        detector = MlKitObjectDetector(depthEstimator)
         decisionEngine = DecisionEngine()
         ocrManager = OcrManager()
 
@@ -109,6 +109,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        cameraExecutor.shutdown()
+        detector.close()
+        ttsManager.shutdown()
+    }
+
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
@@ -149,7 +156,7 @@ class MainActivity : AppCompatActivity() {
             if (bitmap != null) {
                 latestBitmap = bitmap
 
-                // 1. Run Detection
+                // 1. Run ML Kit Object Detection (synchronous via latch, always works on Pixel)
                 val detections = detector.detect(bitmap)
                 currentDetections = detections
 
@@ -201,11 +208,11 @@ class MainActivity : AppCompatActivity() {
                 bitmap
             }
         } catch (e: Exception) {
-            Log.e(tag, "toBitmap conversion failed: ${e.message}, trying fallback")
+            Log.e(tag, "toBitmap failed: ${e.message}, trying YUV fallback")
             try {
                 yuvToBitmapFallback(imageProxy)
             } catch (e2: Exception) {
-                Log.e(tag, "Fallback also failed: ${e2.message}")
+                Log.e(tag, "YUV fallback failed: ${e2.message}")
                 null
             }
         }
@@ -247,16 +254,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // --- Physical Hardware Button Accessibility Controls ---
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
             KeyEvent.KEYCODE_VOLUME_UP -> {
-                // Trigger On-Demand OCR Text Reader
                 triggerOcrReading()
                 return true
             }
             KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                // Trigger On-Demand Full Scene Summary
                 triggerSceneSummary()
                 return true
             }
@@ -296,13 +300,5 @@ class MainActivity : AppCompatActivity() {
                 finish()
             }
         }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        cameraExecutor.shutdown()
-        detector.close()
-        ocrManager.close()
-        ttsManager.shutdown()
     }
 }

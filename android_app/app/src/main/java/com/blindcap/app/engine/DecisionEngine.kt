@@ -1,4 +1,4 @@
-﻿package com.blindcap.app.engine
+package com.blindcap.app.engine
 
 import com.blindcap.app.ai.Detection
 import kotlin.math.abs
@@ -283,9 +283,37 @@ class DecisionEngine {
     }
 
     fun getFullSceneSummary(detections: List<Detection>): String {
-        if (detections.isEmpty()) return "The path ahead is completely clear with no detected obstacles."
-        val desc = formatSceneDescription(trackedObjects.values.toList())
-        return "Scene summary: $desc"
+        if (detections.isEmpty()) {
+            return if (trackedObjects.isEmpty()) {
+                "The path ahead is completely clear. No objects detected."
+            } else {
+                val desc = formatSceneDescription(trackedObjects.values.toList())
+                "Scene summary: $desc"
+            }
+        }
+        // Describe live detections directly so button always reflects what camera sees
+        val grouped = detections.groupBy { it.region }
+        val parts = mutableListOf<String>()
+        grouped["center"]?.let { items ->
+            val names = items.groupingBy { it.className }.eachCount()
+                .map { (n, c) -> if (c > 1) "$c ${pluralize(n)}" else n }
+                .joinToString(" and ")
+            val dist = items.minOfOrNull { it.estimatedDistanceM } ?: 0f
+            parts.add("$names ahead${if (dist in 0.3f..5f) ", ${(dist * 10).roundToInt() / 10.0f} meters away" else ""}")
+        }
+        grouped["left"]?.let { items ->
+            val names = items.groupingBy { it.className }.eachCount()
+                .map { (n, c) -> if (c > 1) "$c ${pluralize(n)}" else n }
+                .joinToString(" and ")
+            parts.add("$names on your left")
+        }
+        grouped["right"]?.let { items ->
+            val names = items.groupingBy { it.className }.eachCount()
+                .map { (n, c) -> if (c > 1) "$c ${pluralize(n)}" else n }
+                .joinToString(" and ")
+            parts.add("$names on your right")
+        }
+        return if (parts.isEmpty()) "Path is clear." else parts.joinToString(". ") + "."
     }
 
     fun reset() {
