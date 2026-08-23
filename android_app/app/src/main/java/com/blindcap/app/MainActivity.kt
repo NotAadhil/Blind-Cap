@@ -312,7 +312,11 @@ class MainActivity : AppCompatActivity() {
     private fun setupGestures() {
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                ttsManager.repeatLast()
+                if (ttsManager.isSpeaking || ttsManager.isOcrActive) {
+                    stopSpeech()
+                } else {
+                    ttsManager.repeatLast()
+                }
                 return true
             }
 
@@ -327,7 +331,11 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onLongPress(e: MotionEvent) {
-                triggerOcrReading()
+                if (ttsManager.isOcrActive || ttsManager.isSpeaking) {
+                    stopSpeech()
+                } else {
+                    triggerOcrReading()
+                }
             }
         })
 
@@ -339,11 +347,36 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupActionButtons() {
         binding.btnOcr.setOnClickListener {
-            triggerOcrReading()
+            if (ttsManager.isOcrActive || ttsManager.isSpeaking) {
+                stopSpeech()
+            } else {
+                triggerOcrReading()
+            }
         }
+
+        binding.btnOcr.setOnLongClickListener {
+            stopSpeech()
+            true
+        }
+
         binding.btnScene.setOnClickListener {
-            triggerSceneSummary()
+            if (ttsManager.isSpeaking) {
+                stopSpeech()
+            } else {
+                triggerSceneSummary()
+            }
         }
+
+        binding.btnScene.setOnLongClickListener {
+            stopSpeech()
+            true
+        }
+    }
+
+    private fun stopSpeech() {
+        ttsManager.stop()
+        isOcrProcessing.set(false)
+        Toast.makeText(this, "Speech stopped.", Toast.LENGTH_SHORT).show()
     }
 
     override fun onDestroy() {
@@ -435,11 +468,19 @@ class MainActivity : AppCompatActivity() {
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_VOLUME_UP -> {
-                    triggerOcrReading()
+                    if (ttsManager.isOcrActive || ttsManager.isSpeaking) {
+                        stopSpeech()
+                    } else {
+                        triggerOcrReading()
+                    }
                     return true
                 }
                 KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                    triggerSceneSummary()
+                    if (ttsManager.isSpeaking) {
+                        stopSpeech()
+                    } else {
+                        triggerSceneSummary()
+                    }
                     return true
                 }
             }

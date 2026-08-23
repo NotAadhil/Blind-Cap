@@ -26,7 +26,7 @@ The software captures video from a camera mounted on a wearable cap or webcam, d
 ## Android Mobile Application & Releases
 
 Download the latest pre-compiled Android APK directly from GitHub Releases:
-- [**Download Latest Android APK (v1.0.21)**](https://github.com/NotAadhil/Blind-Cap/releases/download/v1.0.21/app-debug.apk)
+- [**Download Latest Android APK (v1.0.22)**](https://github.com/NotAadhil/Blind-Cap/releases/download/v1.0.22/app-debug.apk)
 - [**View Full Release History & Changelog (CHANGELOG.md)**](file:///D:/Projects/Project%20Azure/CHANGELOG.md)
 
 ---

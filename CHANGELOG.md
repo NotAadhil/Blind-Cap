@@ -4,6 +4,25 @@ All notable changes, bug fixes, performance improvements, and architectural evol
 
 ---
 
+## [v1.0.22] - 2026-08-23
+
+### Summary
+Instant Speech Cancellation & OCR Control: Press & Hold (Long-Press) to Stop, Single-Tap Stop Toggle, Screen Gestures, and Clean Production Release.
+
+### Features & Usability Enhancements
+- **Press & Hold (Long-Press) to Stop Speech**:
+  - Long-pressing the **Read Text** button immediately stops the TTS speech engine, clears any pending paragraph chunks, and resets the reading state.
+  - Long-pressing the **Scene Summary** button also immediately stops scene speech.
+- **Single-Tap Stop Toggle**:
+  - If OCR is actively speaking long text, tapping the **Read Text** button again immediately acts as a **Stop** button, silences the audio, and displays `"Speech stopped."`
+- **Full Screen & Hardware Key Gestures**:
+  - Long-pressing anywhere on the screen while speech is playing immediately stops audio playback.
+  - Tapping the screen or pressing **Volume Up / Volume Down** while speech is active immediately silences it.
+- **Release History Cleanup**:
+  - Purged obsolete/broken experimental builds (v1.0.8–v1.0.15) from GitHub Releases so only verified, high-performance, and stable builds are available.
+
+---
+
 ## [v1.0.21] - 2026-08-23
 
 ### Summary
