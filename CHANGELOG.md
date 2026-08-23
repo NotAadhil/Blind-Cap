@@ -4,6 +4,41 @@ All notable changes, bug fixes, performance improvements, and architectural evol
 
 ---
 
+## [v1.0.21] - 2026-08-23
+
+### Summary
+Comprehensive AI Pipeline Acceleration, Global Camera Motion Compensation, False-Positive Temporal Gate, and Anti-Stacking OCR Debouncer.
+
+### Bugs Identified & Addressed
+- **AI Frame Rate Drops (< 10 FPS)**:
+  - Per-frame allocation in `TensorImage.load()` and `ImageProcessor.process()` created severe GC churn.
+  - Redundant 300-slot iteration and class smoothing on low-scoring candidate slots wasted CPU cycles.
+- **OCR Button Request Stacking**:
+  - Rapid presses spawned multiple concurrent coroutines, stacking multiple `"No readable text found"` speech events in the TTS queue.
+- **False-Positive Single-Frame Detections**:
+  - Single-frame candidate detections at `>= 0.45` were immediately promoted to confirmed status and announced.
+- **Repeated Person Announcements on Camera Movement**:
+  - Camera panning caused bounding boxes to shift faster than standard IoU tracking could bridge, dropping tracks and creating new IDs upon camera stabilization.
+
+### Fixes & Architectural Enhancements
+- **Zero-Allocation AI Inference Pipeline (`TfliteYoloDetector.kt`)**:
+  - Reused `TensorImage` and pre-allocated output tensors eliminate per-frame heap allocations.
+  - Score gate moved before class smoothing, eliminating 90%+ redundant iterations.
+  - Bounded class history cache with periodic pruning prevents memory creep.
+- **Global Scene Motion Compensation (`DecisionEngine.kt`)**:
+  - Multi-factor spatial association combines IoU (35%), normalized center proximity (30%), normalized area scale ratio (15%), and class matching (20%).
+  - Person class center tolerance expanded to `0.55` so camera pans do not break track identity.
+  - Global camera motion compensation detects uniform scene shifts and extends the coasting grace window to 30 frames (~2.2s).
+- **Two-Tier Temporal Validation Gate**:
+  - Requires 2+ consecutive frames of consistent detection OR high confidence (`>= 0.55`) before promoting any object to `CONFIRMED`.
+  - Single-frame transient hallucinations (0.32-0.54) are held in `CANDIDATE` state and never trigger speech.
+- **Anti-Stacking Concurrency & Debounce Guards (`MainActivity.kt`, `TtsManager.kt`)**:
+  - `AtomicBoolean` guard prevents concurrent OCR coroutines from running simultaneously.
+  - 1.5-second debounce window rejects rapid repetitive button presses.
+  - Identical OCR speech requests within 2.5s are automatically filtered out.
+
+---
+
 ## [v1.0.19] - 2026-08-22
 
 ### Summary

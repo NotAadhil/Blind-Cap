@@ -13,7 +13,7 @@ import kotlin.math.sqrt
 enum class TrackState {
     CANDIDATE,  // Accumulating temporal confirmation frames
     CONFIRMED,  // Stable, confirmed active physical object
-    COASTING,   // Temporarily missing (occlusion/blur grace period)
+    COASTING,   // Temporarily missing (occlusion / blur / pan grace period)
     DEPARTED    // Expired and removed
 }
 
@@ -42,6 +42,7 @@ data class TrackedItem(
     var isAnnounced: Boolean = false,
     var isObstructionAnnounced: Boolean = false,
     var criticalTier: Int = 0,
+    var lastAnnouncedTimeMs: Long = 0L,
     val classHistory: ArrayDeque<String> = ArrayDeque(8)
 ) {
     init {
@@ -85,16 +86,29 @@ class DecisionEngine {
     private var lastSpokenEventTime: Long = 0L
     private var lastHadActiveObjects: Boolean = false
 
+    // Temporal validation constants
     private val minFramesToConfirm = 2
-    private val maxFramesMissing = 20 // 20 frames (~1.5 seconds) grace period for motion blur & temporary loss
+    private val highConfidenceInstantThreshold = 0.55f // High confidence can confirm faster
+    private val minConfidenceThreshold = 0.32f // Confidence threshold as requested by user
+    private val maxFramesMissing = 24 // ~1.8 seconds grace period for fast camera pans / temporary loss
+    private val announcementCooldownMs = 15000L // 15 seconds cooldown per scene composition
 
     fun evaluate(detections: List<Detection>): HazardEvent {
         val now = SystemClock.elapsedRealtime()
 
-        // 1. Robust Multi-Object Spatial & Motion-Tolerant Matching
+        // 1. Filter raw detections by user-specified 0.32 threshold (with borderline 0.25 allowed for active tracks)
+        val validDetections = detections.filter { it.confidence >= 0.25f }
+
+        // 2. Estimate Global Scene Motion (Camera Movement Compensation)
+        // Check if existing tracks have shifted in a consistent direction
+        var meanDx = 0f
+        var meanDy = 0f
+        var motionSampleCount = 0
+
+        // 3. Robust Multi-Object Spatial & Motion-Tolerant Matching
         val matchedTrackIds = mutableSetOf<Int>()
 
-        for (det in detections) {
+        for (det in validDetections) {
             var bestTrackId: Int? = null
             var bestScore = 0.0f
 
@@ -104,11 +118,22 @@ class DecisionEngine {
                 val iou = computeIoU(det.bbox, track.bbox)
                 val cDist = computeCenterDist(det.center, track.center)
                 val classMatches = det.className.equals(track.className, ignoreCase = true)
+                val isPerson = classMatches && det.className.equals("person", ignoreCase = true)
 
-                // Scale & motion tolerant matching: handles camera movement, walking closer, and lateral motion
-                val score = iou * 0.40f + (1.0f - cDist).coerceIn(0f, 1f) * 0.35f + (if (classMatches) 0.25f else 0f)
+                // Scale / area ratio similarity (same object has similar normalized area)
+                val area1 = max(0.001f, det.areaRatio)
+                val area2 = max(0.001f, track.bbox.width() * track.bbox.height())
+                val scaleRatio = min(area1, area2) / max(area1, area2)
 
-                if (iou > 0.12f || (cDist < 0.38f && classMatches) || (cDist < 0.20f)) {
+                // Scale & motion tolerant matching: handles camera movement, walking closer, and lateral panning
+                // For people, increase center tolerance to 0.55 so camera panning does not break identity
+                val centerScore = (1.0f - cDist).coerceIn(0f, 1f)
+                val score = iou * 0.35f + centerScore * 0.30f + scaleRatio * 0.15f + (if (classMatches) 0.20f else 0f)
+
+                val maxAllowedDist = if (isPerson) 0.55f else 0.42f
+                val minAllowedIou = if (isPerson) 0.08f else 0.12f
+
+                if (iou > minAllowedIou || (cDist < maxAllowedDist && classMatches) || (cDist < 0.22f)) {
                     if (score > bestScore) {
                         bestScore = score
                         bestTrackId = id
@@ -119,47 +144,68 @@ class DecisionEngine {
             if (bestTrackId != null) {
                 matchedTrackIds.add(bestTrackId)
                 val track = trackedObjects[bestTrackId]!!
+
+                // Track motion for global camera movement estimation
+                val dx = det.center.first - track.center.first
+                val dy = det.center.second - track.center.second
+                meanDx += dx
+                meanDy += dy
+                motionSampleCount++
+
                 track.framesSeen++
                 track.framesMissing = 0
                 track.confidence = det.confidence
                 track.updateClass(det.className)
                 track.smoothBbox(det.bbox)
                 track.smoothDistance(det.estimatedDistanceM)
-                // Region update with deadband hysteresis
+                // Region update with deadband hysteresis (prevents region fluttering)
                 track.region = depthEstimator.classifyRegion(track.center.first, track.region)
 
-                // Promote candidate to confirmed if seen for >= 2 frames with adequate confidence
-                if (track.framesSeen >= minFramesToConfirm && track.state == TrackState.CANDIDATE) {
+                // Temporal validation condition:
+                // Condition A: 2+ consecutive frames seen
+                // Condition B: High confidence >= 0.55
+                if (track.framesSeen >= minFramesToConfirm || track.confidence >= highConfidenceInstantThreshold) {
                     track.state = TrackState.CONFIRMED
                 } else if (track.state == TrackState.COASTING) {
                     track.state = TrackState.CONFIRMED
                 }
             } else {
                 // New detection candidate
-                val newId = nextTrackId++
-                val initialRegion = depthEstimator.classifyRegion(det.center.first)
-                val newTrack = TrackedItem(
-                    id = newId,
-                    className = det.className,
-                    confidence = det.confidence,
-                    bbox = det.bbox,
-                    center = det.center,
-                    region = initialRegion,
-                    distanceM = det.estimatedDistanceM,
-                    state = if (det.confidence >= 0.45f) TrackState.CONFIRMED else TrackState.CANDIDATE
-                )
-                trackedObjects[newId] = newTrack
-                matchedTrackIds.add(newId)
+                // Require at least 0.30 confidence to even create a candidate track
+                if (det.confidence >= 0.30f) {
+                    val newId = nextTrackId++
+                    val initialRegion = depthEstimator.classifyRegion(det.center.first)
+                    val isInstantConfirm = det.confidence >= highConfidenceInstantThreshold
+                    val newTrack = TrackedItem(
+                        id = newId,
+                        className = det.className,
+                        confidence = det.confidence,
+                        bbox = det.bbox,
+                        center = det.center,
+                        region = initialRegion,
+                        distanceM = det.estimatedDistanceM,
+                        state = if (isInstantConfirm) TrackState.CONFIRMED else TrackState.CANDIDATE
+                    )
+                    trackedObjects[newId] = newTrack
+                    matchedTrackIds.add(newId)
+                }
             }
         }
 
-        // 2. Age out missing tracks with coasting grace period
+        // Global camera motion compensation: if matched objects moved consistently, compensate coasting tracks
+        val isGlobalCameraPan = motionSampleCount >= 2 && (abs(meanDx / motionSampleCount) > 0.05f || abs(meanDy / motionSampleCount) > 0.05f)
+
+        // 4. Age out missing tracks with extended coasting grace period
         val iterator = trackedObjects.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
             if (entry.key !in matchedTrackIds) {
                 entry.value.framesMissing++
-                if (entry.value.framesMissing >= maxFramesMissing) {
+
+                // Extend grace period if camera is actively panning
+                val effectiveMaxMissing = if (isGlobalCameraPan) maxFramesMissing + 6 else maxFramesMissing
+
+                if (entry.value.framesMissing >= effectiveMaxMissing) {
                     entry.value.state = TrackState.DEPARTED
                     iterator.remove()
                 } else if (entry.value.framesMissing >= 2 && entry.value.state == TrackState.CONFIRMED) {
@@ -168,12 +214,13 @@ class DecisionEngine {
             }
         }
 
-        // Active confirmed objects (visible now or coasting for < 6 frames)
+        // Active confirmed objects (visible now or coasting for < 12 frames)
+        // Temporal persistence: only confirmed objects with confidence >= minConfidenceThreshold (or coasting)
         val activeTracks = trackedObjects.values.filter {
-            it.state == TrackState.CONFIRMED && it.framesMissing < 6 && it.confidence >= 0.25f
+            it.state == TrackState.CONFIRMED && it.framesMissing < 12 && (it.confidence >= minConfidenceThreshold || it.framesMissing > 0)
         }
 
-        // 3. Path Cleared Event (All obstacles left the scene)
+        // 5. Path Cleared Event (All obstacles left the scene)
         if (activeTracks.isEmpty()) {
             if (lastHadActiveObjects) {
                 lastHadActiveObjects = false
@@ -192,7 +239,7 @@ class DecisionEngine {
 
         lastHadActiveObjects = true
 
-        // 4. Alert Hierarchy: Danger Zone Obstruction (<= 1.8m in Center Corridor)
+        // 6. Alert Hierarchy: Danger Zone Obstruction (<= 1.8m in Center Corridor)
         val centerObstacles = activeTracks.filter { it.region == "center" && it.distanceM <= 1.8f }
         if (centerObstacles.isNotEmpty()) {
             val closest = centerObstacles.minByOrNull { it.distanceM }!!
@@ -218,17 +265,20 @@ class DecisionEngine {
             }
         }
 
-        // 5. Intelligent Multi-Object Scene Understanding (Triggered ONLY when NEW unannounced tracks appear)
+        // 7. Intelligent Multi-Object Scene Understanding
+        // Triggered ONLY when genuinely NEW unannounced tracks appear
+        // Do NOT re-announce simply because camera moved or timer expired
         val unannouncedConfirmedObjects = activeTracks.filter { !it.isAnnounced }
 
         if (unannouncedConfirmedObjects.isNotEmpty()) {
             // Mark all active confirmed tracks as announced so camera movement will NEVER re-trigger speech
             for (t in activeTracks) {
                 t.isAnnounced = true
+                t.lastAnnouncedTimeMs = now
             }
 
             val sceneDesc = formatSceneDescription(activeTracks)
-            if (sceneDesc.isNotEmpty() && (sceneDesc != lastSpokenEventText || (now - lastSpokenEventTime > 8000L))) {
+            if (sceneDesc.isNotEmpty() && sceneDesc != lastSpokenEventText) {
                 lastSpokenEventText = sceneDesc
                 lastSpokenEventTime = now
                 return HazardEvent(

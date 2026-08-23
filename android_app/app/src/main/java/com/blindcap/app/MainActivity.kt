@@ -35,6 +35,7 @@ import com.blindcap.app.net.MjpegStreamReader
 import com.blindcap.app.ocr.OcrManager
 import com.blindcap.app.speech.TtsManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutorService
@@ -74,6 +75,10 @@ class MainActivity : AppCompatActivity() {
     private val isAiRunning = AtomicBoolean(true)
     private var aiWorkerThread: Thread? = null
 
+    // OCR Request State & Debounce Guard
+    private val isOcrProcessing = AtomicBoolean(false)
+    private var lastOcrRequestTime = 0L
+
     // FPS Measurement Instrumentation
     private var cameraFrameCount = 0
     private var lastCameraFpsTime = SystemClock.elapsedRealtime()
@@ -83,6 +88,7 @@ class MainActivity : AppCompatActivity() {
     private var lastAiFpsTime = SystemClock.elapsedRealtime()
     private var currentAiFps = 0f
 
+    @Volatile
     private var latestBitmap: Bitmap? = null
     private var currentDetections: List<Detection> = emptyList()
 
@@ -148,7 +154,7 @@ class MainActivity : AppCompatActivity() {
                     measureAiFps()
                 } else {
                     try {
-                        Thread.sleep(8) // Short sleep to yield CPU if no new frame
+                        Thread.sleep(6) // Short yield if waiting for next frame
                     } catch (_: InterruptedException) {
                         break
                     }
@@ -164,11 +170,11 @@ class MainActivity : AppCompatActivity() {
     private fun processAiFrame(bitmap: Bitmap) {
         latestBitmap = bitmap
 
-        // 1. Hardware Inference & Pre/Post Processing
+        // 1. Hardware Inference & Pre/Post Processing (Optimized memory reuse)
         val detections = detector.detect(bitmap)
         currentDetections = detections
 
-        // 2. Decision Engine with Scale-Invariant Tracking & Zero-Repeat State Machine
+        // 2. Decision Engine with Scale-Invariant Tracking & Camera Motion Compensation
         val event = decisionEngine.evaluate(detections)
 
         // 3. Dispatch Speech if warranted
@@ -441,18 +447,53 @@ class MainActivity : AppCompatActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    /**
+     * Trigger OCR text reading with double-click / stacking protection.
+     * Prevents multiple simultaneous OCR extractions and debounces rapid presses.
+     */
     private fun triggerOcrReading() {
+        val now = SystemClock.elapsedRealtime()
+
+        // 1. Debounce guard: reject presses faster than 1.5 seconds apart
+        if (now - lastOcrRequestTime < 1500L) {
+            Log.d(tag, "Ignored rapid OCR button press (debounce window)")
+            return
+        }
+
+        // 2. Concurrency guard: reject if an OCR scan is actively running or TTS is reading previous OCR
+        if (!isOcrProcessing.compareAndSet(false, true)) {
+            Log.d(tag, "Ignored OCR press - another OCR request is currently in flight")
+            return
+        }
+
+        if (ttsManager.isOcrActive) {
+            Log.d(tag, "Ignored OCR press - TTS is currently reading previous text")
+            isOcrProcessing.set(false)
+            return
+        }
+
+        lastOcrRequestTime = now
         val bitmap = latestBitmap
         if (bitmap == null) {
+            isOcrProcessing.set(false)
             ttsManager.speak("Video source initializing. Please wait.", priority = 70, severity = "INFO")
             return
         }
+
         ttsManager.speak("Reading text...", priority = 75, severity = "INFO")
+
         lifecycleScope.launch {
-            val resultText = ocrManager.extractText(bitmap)
-            withContext(Dispatchers.Main) {
-                ttsManager.startOcrReading(resultText)
-                Toast.makeText(this@MainActivity, resultText, Toast.LENGTH_LONG).show()
+            try {
+                val resultText = ocrManager.extractText(bitmap)
+                withContext(Dispatchers.Main) {
+                    ttsManager.startOcrReading(resultText)
+                    Toast.makeText(this@MainActivity, resultText, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "OCR processing error: ${e.message}", e)
+            } finally {
+                delay(1200L) // Debounce before allowing next scan
+                isOcrProcessing.set(false)
             }
         }
     }

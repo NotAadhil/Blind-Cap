@@ -28,6 +28,7 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
     private var currentlySpeakingText: String? = null
     private var currentPriority: Int = 0
     private var lastSpokenTime: Long = 0L
+    private var lastOcrSpeakTime: Long = 0L
 
     private val utteranceIdCounter = AtomicLong(1L)
     @Volatile
@@ -119,6 +120,7 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
 
     /**
      * Dedicated method for user-requested OCR reading that locks priority and protects against background detection interruptions.
+     * Includes debouncing: rejects repeated identical or rapid successive OCR calls.
      */
     @Synchronized
     fun startOcrReading(ocrText: String) {
@@ -126,8 +128,16 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
         val trimmed = ocrText.trim()
         if (trimmed.isEmpty()) return
 
+        val now = SystemClock.elapsedRealtime()
+        // Debounce: if the same OCR text was spoken within 2.5 seconds, ignore
+        if (trimmed == currentlySpeakingText && (now - lastOcrSpeakTime < 2500L)) {
+            Log.d(tag, "Debounced duplicate OCR reading request")
+            return
+        }
+
         Log.i(tag, "Starting active OCR reading task: $trimmed")
         isOcrActive = true
+        lastOcrSpeakTime = now
         pendingMessage = null
 
         // Stop any background speech immediately and start OCR

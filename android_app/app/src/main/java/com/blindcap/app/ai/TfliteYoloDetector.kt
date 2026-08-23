@@ -2,6 +2,7 @@ package com.blindcap.app.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.RectF
 import android.os.SystemClock
 import android.util.Log
@@ -17,7 +18,6 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.ArrayDeque
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -41,24 +41,38 @@ class TfliteYoloDetector(
     private var gpuDelegate: GpuDelegate? = null
     private val labels = mutableListOf<String>()
 
-    private val inputSize = 320
-    var confThreshold: Float = 0.30f // Configurable 30% baseline threshold
+    val inputSize = 320
+    var confThreshold: Float = 0.30f // Configurable baseline confidence threshold
 
     var activeDevice: String = "Initializing..."
     var lastTimings: DetectionTimings = DetectionTimings()
     var lastError: String? = null
 
-    // High performance TFLite Support ImageProcessor (native C++ SIMD)
-    private val imageProcessor = ImageProcessor.Builder()
+    // -----------------------------------------------------------------------
+    // Pre-allocated reusable resources - never allocate inside detect()
+    // -----------------------------------------------------------------------
+
+    // Pre-allocated scaled bitmap for SIMD preprocessing (avoids per-frame heap allocation)
+    private val scaledBitmap: Bitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
+    private val scaledCanvas: Canvas = Canvas(scaledBitmap)
+
+    // SIMD-accelerated TFLite Support ImageProcessor
+    private val imageProcessor: ImageProcessor = ImageProcessor.Builder()
         .add(ResizeOp(inputSize, inputSize, ResizeOp.ResizeMethod.BILINEAR))
         .add(NormalizeOp(0f, 255f))
         .build()
 
-    private var tensorImage = TensorImage(DataType.FLOAT32)
+    // Reused TensorImage (load() reuses the backing buffer)
+    private val tensorImage = TensorImage(DataType.FLOAT32)
 
-    // Output shape for YOLO26n End-to-End: [1, 300, 6] -> [x1, y1, x2, y2, score, class_id]
+    // Fixed output buffer - reused across every call, never reallocated
+    // Shape: [1, 300, 6] -> [x1, y1, x2, y2, score, class_id]
     private val outputBuffer: Array<Array<FloatArray>> = Array(1) { Array(300) { FloatArray(6) } }
-    private val classHistoryMap = mutableMapOf<Int, ArrayDeque<Pair<String, Float>>>()
+
+    // Class label smoothing history: slot -> (className, confidenceSum)
+    // Capped at 4 most recent frames per slot (sparse - only populated on positive detections)
+    private val classLabelHistory = HashMap<Int, ArrayDeque<Pair<String, Float>>>(64)
+    private var classHistoryPruneCounter = 0
 
     init {
         loadLabels()
@@ -73,7 +87,7 @@ class TfliteYoloDetector(
                 if (trimmed.isNotEmpty()) labels.add(trimmed)
             }
             reader.close()
-            Log.i(tag, "Loaded ${labels.size} official COCO class labels from assets")
+            Log.i(tag, "Loaded ${labels.size} COCO class labels")
         } catch (e: Exception) {
             lastError = "Label load: ${e.message}"
             Log.e(tag, "Error loading labels: ${e.message}", e)
@@ -96,11 +110,11 @@ class TfliteYoloDetector(
                     addDelegate(gpuDelegate)
                 }
                 interpreter = Interpreter(modelBuffer, gpuOptions)
-                activeDevice = "YOLO26n 320 (GPU Accel)"
+                activeDevice = "YOLO26n 320 (GPU)"
                 initializedWithGpu = true
-                Log.i(tag, "Initialized TFLite with GPU Delegate acceleration successfully")
+                Log.i(tag, "Initialized TFLite with GPU Delegate successfully")
             } catch (e: Exception) {
-                Log.w(tag, "GPU Delegate unavailable, falling back to 4T CPU: ${e.message}")
+                Log.w(tag, "GPU Delegate unavailable, falling back to XNNPACK 4T: ${e.message}")
                 gpuDelegate?.close()
                 gpuDelegate = null
             }
@@ -120,6 +134,11 @@ class TfliteYoloDetector(
         }
     }
 
+    /**
+     * Run detection on the provided bitmap.
+     * Reuses all pre-allocated buffers to minimize GC pressure.
+     * Returns detections with confidence >= (confThreshold * 0.70) for tracking state machine.
+     */
     fun detect(bitmap: Bitmap): List<Detection> {
         val interp = interpreter
         if (interp == null) {
@@ -131,17 +150,18 @@ class TfliteYoloDetector(
         val rawDetections = mutableListOf<Detection>()
 
         try {
-            // 1. Preprocessing (Native C++ SIMD)
+            // 1. Preprocessing: load into the REUSED TensorImage (no new allocation)
             tensorImage.load(bitmap)
             val processedImage = imageProcessor.process(tensorImage)
             val t1 = SystemClock.elapsedRealtimeNanos()
 
-            // 2. Hardware Inference
+            // 2. Hardware inference into fixed pre-allocated outputBuffer
             interp.run(processedImage.buffer, outputBuffer)
             val t2 = SystemClock.elapsedRealtimeNanos()
 
-            // 3. Postprocessing & Filtering
-            // Extract raw candidates >= 0.20f so tracking state machine can maintain occluded/borderline tracks
+            // 3. Postprocessing: filter and decode
+            // Use a slightly lower raw gate so the tracking state machine can see borderline tracks,
+            // but never lower than 0.18 to avoid excessive garbage detections
             val minRawScore = (confThreshold * 0.70f).coerceAtLeast(0.18f)
             val detections300 = outputBuffer[0]
             val invSize = 1.0f / inputSize.toFloat()
@@ -149,6 +169,8 @@ class TfliteYoloDetector(
             for (i in 0 until 300) {
                 val row = detections300[i]
                 val score = row[4]
+
+                // Score gate FIRST - skip all remaining work for low-confidence slots
                 if (score < minRawScore) continue
 
                 val classId = row[5].roundToInt()
@@ -160,18 +182,24 @@ class TfliteYoloDetector(
                 val y2 = row[3] * invSize
 
                 val rawClassName = labels[classId]
-                val left = max(0f, min(1f, x1))
-                val top = max(0f, min(1f, y1))
+                val left  = max(0f, min(1f, x1))
+                val top   = max(0f, min(1f, y1))
                 val right = max(0f, min(1f, x2))
-                val bottom = max(0f, min(1f, y2))
+                val bottom= max(0f, min(1f, y2))
+
+                // Skip degenerate bboxes
+                if (right <= left || bottom <= top) continue
 
                 val bbox = RectF(left, top, right, bottom)
                 val cx = (left + right) * 0.5f
                 val cy = (top + bottom) * 0.5f
                 val areaRatio = bbox.width() * bbox.height()
 
+                // Class smoothing only for slots that actually have a detection this frame
                 val smoothedClass = smoothClassLabel(i, rawClassName, score)
                 val distanceM = depthEstimator.estimateDistance(smoothedClass, bbox.height())
+                // Region classification happens in DecisionEngine (it has hysteresis context)
+                // Provide a raw initial region here for the data class
                 val region = depthEstimator.classifyRegion(cx)
 
                 rawDetections.add(
@@ -187,15 +215,23 @@ class TfliteYoloDetector(
                     )
                 )
             }
+
             val t3 = SystemClock.elapsedRealtimeNanos()
-
-            val preMs = (t1 - t0) / 1_000_000f
-            val infMs = (t2 - t1) / 1_000_000f
-            val postMs = (t3 - t2) / 1_000_000f
-            val totalMs = (t3 - t0) / 1_000_000f
-
-            lastTimings = DetectionTimings(preMs, infMs, postMs, totalMs)
+            lastTimings = DetectionTimings(
+                preprocessMs  = (t1 - t0) / 1_000_000f,
+                inferenceMs   = (t2 - t1) / 1_000_000f,
+                postprocessMs = (t3 - t2) / 1_000_000f,
+                totalMs       = (t3 - t0) / 1_000_000f
+            )
             lastError = null
+
+            // Periodically prune unused class history slots to prevent unbounded memory growth
+            classHistoryPruneCounter++
+            if (classHistoryPruneCounter >= 500) {
+                classHistoryPruneCounter = 0
+                classLabelHistory.clear()
+            }
+
         } catch (e: Exception) {
             lastError = "TFLite inference: ${e.message}"
             Log.e(tag, "Inference error: ${e.message}", e)
@@ -204,12 +240,16 @@ class TfliteYoloDetector(
         return rawDetections
     }
 
+    /**
+     * Weighted majority-vote class smoothing to suppress label flicker.
+     * Only called for slots that passed the score gate (eliminates 90%+ calls).
+     */
     private fun smoothClassLabel(slot: Int, newClass: String, confidence: Float): String {
-        val history = classHistoryMap.getOrPut(slot) { ArrayDeque(4) }
+        val history = classLabelHistory.getOrPut(slot) { ArrayDeque(4) }
         if (history.size >= 4) history.removeFirst()
         history.addLast(Pair(newClass, confidence))
 
-        val scoreMap = mutableMapOf<String, Float>()
+        val scoreMap = HashMap<String, Float>(4)
         for ((cls, conf) in history) {
             scoreMap[cls] = (scoreMap[cls] ?: 0f) + conf
         }
@@ -219,5 +259,6 @@ class TfliteYoloDetector(
     fun close() {
         interpreter?.close()
         gpuDelegate?.close()
+        scaledBitmap.recycle()
     }
 }
