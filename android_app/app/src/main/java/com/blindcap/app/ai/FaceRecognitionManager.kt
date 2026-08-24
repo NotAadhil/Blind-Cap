@@ -21,6 +21,7 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -73,6 +74,11 @@ class FaceRecognitionManager(
     private var inputSize = 112 // MobileFaceNet input dimension
     private var embeddingDim = 192 // Standard output dimension
 
+    // Diagnostic Telemetry
+    @Volatile
+    var lastDiagnostic: String = "Initializing..."
+        private set
+
     // In-memory contact cache
     private val registeredContacts = mutableListOf<FaceContact>()
 
@@ -94,18 +100,19 @@ class FaceRecognitionManager(
 
     private fun initFaceDetector() {
         try {
-            // Ultra-fast on-device face detector
             val options = FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-                .setMinFaceSize(0.10f)
+                .setMinFaceSize(0.12f)
                 .enableTracking()
                 .build()
 
             faceDetector = FaceDetection.getClient(options)
-            Log.i(tag, "Initialized ML Kit Fast Face Detector")
+            lastDiagnostic = "ML Kit Face Detector Ready"
+            Log.i(tag, "Initialized ML Kit Fast Face Detector successfully")
         } catch (e: Exception) {
+            lastDiagnostic = "ML Kit Init Error: ${e.message}"
             Log.e(tag, "Failed to initialize ML Kit Face Detector: ${e.message}", e)
         }
     }
@@ -129,7 +136,7 @@ class FaceRecognitionManager(
                 initializedWithGpu = true
                 Log.i(tag, "MobileFaceNet initialized with GPU Delegate")
             } catch (e: Exception) {
-                Log.w(tag, "MobileFaceNet GPU init failed, using XNNPACK: ${e.message}")
+                Log.w(tag, "MobileFaceNet GPU init failed, using XNNPACK CPU: ${e.message}")
                 gpuDelegate?.close()
                 gpuDelegate = null
             }
@@ -157,79 +164,136 @@ class FaceRecognitionManager(
 
             outputEmbeddingBuffer = Array(1) { FloatArray(embeddingDim) }
             isInitialized = true
+            lastDiagnostic = "MobileFaceNet Ready (${registeredContacts.size} contacts)"
             Log.i(tag, "MobileFaceNet ready (inputSize=$inputSize, embeddingDim=$embeddingDim)")
 
         } catch (e: Exception) {
+            lastDiagnostic = "MobileFaceNet Init Error: ${e.message}"
             Log.e(tag, "Failed to initialize MobileFaceNet: ${e.message}", e)
         }
     }
 
     /**
      * Run real-time face detection and match against registered contacts.
+     * Supports Dual Strategy: Primary ML Kit Face Detector + Fallback YOLO Person Head Cropping.
      */
-    fun detectAndRecognizeFaces(bitmap: Bitmap): List<RecognizedFace> {
-        val detector = faceDetector ?: return emptyList()
-
+    fun detectAndRecognizeFaces(
+        bitmap: Bitmap,
+        personDetections: List<Detection> = emptyList()
+    ): List<RecognizedFace> {
         val recognizedList = mutableListOf<RecognizedFace>()
+        val bmpW = bitmap.width.toFloat()
+        val bmpH = bitmap.height.toFloat()
 
-        try {
-            val inputImage = InputImage.fromBitmap(bitmap, 0)
-            val task = detector.process(inputImage)
-            val faces: List<Face> = Tasks.await(task)
+        if (bmpW <= 0 || bmpH <= 0) return emptyList()
 
-            val bmpW = bitmap.width.toFloat()
-            val bmpH = bitmap.height.toFloat()
+        // Strategy A: Primary ML Kit Face Detection
+        var mlKitSucceeded = false
+        val detector = faceDetector
+        if (detector != null) {
+            try {
+                val inputImage = InputImage.fromBitmap(bitmap, 0)
+                val task = detector.process(inputImage)
+                val faces: List<Face> = Tasks.await(task, 250, TimeUnit.MILLISECONDS)
+                mlKitSucceeded = true
 
-            for (face in faces) {
-                val bounds = face.boundingBox
+                for (face in faces) {
+                    val bounds = face.boundingBox
 
-                // Normalized bounding box
-                val left = max(0f, bounds.left / bmpW)
-                val top = max(0f, bounds.top / bmpH)
-                val right = min(1f, bounds.right / bmpW)
-                val bottom = min(1f, bounds.bottom / bmpH)
+                    val left = max(0f, bounds.left / bmpW)
+                    val top = max(0f, bounds.top / bmpH)
+                    val right = min(1f, bounds.right / bmpW)
+                    val bottom = min(1f, bounds.bottom / bmpH)
 
-                if (right <= left || bottom <= top) continue
+                    if (right <= left || bottom <= top) continue
 
-                val normBbox = RectF(left, top, right, bottom)
-                val eulerY = face.headEulerAngleY
-                val isFacingUser = abs(eulerY) <= 22f
+                    val normBbox = RectF(left, top, right, bottom)
+                    val eulerY = face.headEulerAngleY
+                    val isFacingUser = abs(eulerY) <= 22f
 
-                // Extract normalized 192D embedding from square face crop
-                val embedding = extractFaceEmbedding(bitmap, bounds)
-
-                if (embedding != null) {
-                    val match = findBestContactMatch(embedding)
-                    if (match != null && match.second >= cosineSimilarityThreshold) {
-                        recognizedList.add(
-                            RecognizedFace(
-                                name = match.first.name,
-                                isKnown = true,
-                                confidence = match.second,
-                                bbox = normBbox,
-                                isFacingUser = isFacingUser,
-                                headEulerY = eulerY,
-                                trackingId = face.trackingId
+                    val embedding = extractFaceEmbedding(bitmap, bounds)
+                    if (embedding != null) {
+                        val match = findBestContactMatch(embedding)
+                        if (match != null && match.second >= cosineSimilarityThreshold) {
+                            recognizedList.add(
+                                RecognizedFace(
+                                    name = match.first.name,
+                                    isKnown = true,
+                                    confidence = match.second,
+                                    bbox = normBbox,
+                                    isFacingUser = isFacingUser,
+                                    headEulerY = eulerY,
+                                    trackingId = face.trackingId
+                                )
                             )
-                        )
-                    } else {
-                        recognizedList.add(
-                            RecognizedFace(
-                                name = null,
-                                isKnown = false,
-                                confidence = match?.second ?: 0f,
-                                bbox = normBbox,
-                                isFacingUser = isFacingUser,
-                                headEulerY = eulerY,
-                                trackingId = face.trackingId
+                        } else {
+                            recognizedList.add(
+                                RecognizedFace(
+                                    name = null,
+                                    isKnown = false,
+                                    confidence = match?.second ?: 0f,
+                                    bbox = normBbox,
+                                    isFacingUser = isFacingUser,
+                                    headEulerY = eulerY,
+                                    trackingId = face.trackingId
+                                )
                             )
-                        )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(tag, "ML Kit detection step skipped/timed out: ${e.message}")
+            }
+        }
+
+        // Strategy B: Fallback Anatomical Head Extraction from YOLO Person Bounding Boxes
+        // If ML Kit found 0 faces but YOLO detected persons, extract the anatomical head region (top 35% of person box)
+        if (recognizedList.isEmpty() && personDetections.isNotEmpty()) {
+            for (det in personDetections) {
+                if (!det.className.equals("person", ignoreCase = true)) continue
+
+                val pBox = det.bbox
+                val headTop = pBox.top
+                val headBottom = pBox.top + (pBox.height() * 0.35f)
+                val headLeft = pBox.left
+                val headRight = pBox.right
+
+                val pixelBounds = Rect(
+                    (headLeft * bmpW).toInt().coerceIn(0, bitmap.width - 1),
+                    (headTop * bmpH).toInt().coerceIn(0, bitmap.height - 1),
+                    (headRight * bmpW).toInt().coerceIn(1, bitmap.width),
+                    (headBottom * bmpH).toInt().coerceIn(1, bitmap.height)
+                )
+
+                if (pixelBounds.width() > 20 && pixelBounds.height() > 20) {
+                    val embedding = extractFaceEmbedding(bitmap, pixelBounds)
+                    if (embedding != null) {
+                        val match = findBestContactMatch(embedding)
+                        val normBbox = RectF(headLeft, headTop, headRight, headBottom)
+                        if (match != null && match.second >= cosineSimilarityThreshold) {
+                            recognizedList.add(
+                                RecognizedFace(
+                                    name = match.first.name,
+                                    isKnown = true,
+                                    confidence = match.second,
+                                    bbox = normBbox,
+                                    isFacingUser = true,
+                                    headEulerY = 0f,
+                                    trackingId = null
+                                )
+                            )
+                        }
                     }
                 }
             }
+        }
 
-        } catch (e: Exception) {
-            Log.e(tag, "Face recognition error: ${e.message}")
+        lastDiagnostic = if (recognizedList.isNotEmpty()) {
+            val known = recognizedList.firstOrNull { it.isKnown }
+            if (known != null) "Identified: ${known.name} (${String.format("%.2f", known.confidence)})"
+            else "Face Detected (Unknown)"
+        } else {
+            "Scanning (${registeredContacts.size} contacts)"
         }
 
         return recognizedList
@@ -237,12 +301,14 @@ class FaceRecognitionManager(
 
     /**
      * Extract 192D normalized facial embedding from a square cropped face.
+     * Synchronized to ensure thread-safe TFLite inference.
      */
+    @Synchronized
     private fun extractFaceEmbedding(bitmap: Bitmap, faceBounds: Rect): FloatArray? {
         val interp = interpreter ?: return null
 
         try {
-            // Square crop with 20% margin to maintain facial proportions without aspect distortion
+            // Square crop with 25% margin to preserve facial proportions without distortion
             val cx = faceBounds.centerX()
             val cy = faceBounds.centerY()
             val faceSize = max(faceBounds.width(), faceBounds.height()) * 1.25f
@@ -258,10 +324,9 @@ class FaceRecognitionManager(
             val srcRect = Rect(srcLeft, srcTop, srcRight, srcBottom)
             val dstRect = Rect(0, 0, inputSize, inputSize)
 
-            // Draw square face crop into 112x112 bitmap (zero-allocation)
             cropCanvas.drawBitmap(bitmap, srcRect, dstRect, cropPaint)
 
-            // Preprocess 112x112 into Float32 ByteBuffer: (pixel - 127.5) / 128.0
+            // Preprocess into Float32 ByteBuffer: (pixel - 127.5) / 128.0
             inputByteBuffer.rewind()
             val intValues = IntArray(inputSize * inputSize)
             cropFaceBitmap.getPixels(intValues, 0, inputSize, 0, 0, inputSize, inputSize)
@@ -276,10 +341,10 @@ class FaceRecognitionManager(
                 inputByteBuffer.putFloat((b - 127.5f) / 128.0f)
             }
 
-            // Run inference
+            // Run TFLite inference
             interp.run(inputByteBuffer, outputEmbeddingBuffer)
 
-            // L2-Normalize the output vector
+            // L2-Normalize output embedding vector
             val rawVector = outputEmbeddingBuffer[0]
             var sumSquares = 0f
             for (v in rawVector) {
@@ -332,30 +397,45 @@ class FaceRecognitionManager(
     }
 
     /**
-     * Register a new face contact from a live captured bitmap.
+     * Register a new face contact from a captured bitmap.
+     * Executes fully off the UI thread.
      */
+    @Synchronized
     fun registerFaceFromBitmap(name: String, bitmap: Bitmap): Result<FaceContact> {
-        val detector = faceDetector ?: return Result.failure(Exception("Face detector not ready"))
         val trimmedName = name.trim()
         if (trimmedName.isEmpty()) {
             return Result.failure(IllegalArgumentException("Contact name cannot be empty"))
         }
 
         try {
-            val inputImage = InputImage.fromBitmap(bitmap, 0)
-            val task = detector.process(inputImage)
-            val faces: List<Face> = Tasks.await(task)
+            var faceBounds: Rect? = null
 
-            if (faces.isEmpty()) {
-                return Result.failure(Exception("No face detected. Please align face clearly in view."))
+            // 1. Try ML Kit Face Detection
+            val detector = faceDetector
+            if (detector != null) {
+                try {
+                    val inputImage = InputImage.fromBitmap(bitmap, 0)
+                    val task = detector.process(inputImage)
+                    val faces: List<Face> = Tasks.await(task, 2, TimeUnit.SECONDS)
+                    if (faces.isNotEmpty()) {
+                        val primary = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+                        faceBounds = primary?.boundingBox
+                    }
+                } catch (e: Exception) {
+                    Log.w(tag, "ML Kit enrollment scan error: ${e.message}")
+                }
             }
 
-            // Pick the largest/most centered face
-            val primaryFace = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
-                ?: return Result.failure(Exception("Could not isolate face"))
+            // 2. Fallback: Center crop if ML Kit was not available
+            if (faceBounds == null) {
+                val cx = bitmap.width / 2
+                val cy = bitmap.height / 2
+                val size = (min(bitmap.width, bitmap.height) * 0.5f).toInt()
+                faceBounds = Rect(cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2)
+            }
 
-            val embedding = extractFaceEmbedding(bitmap, primaryFace.boundingBox)
-                ?: return Result.failure(Exception("Failed to extract facial features"))
+            val embedding = extractFaceEmbedding(bitmap, faceBounds)
+                ?: return Result.failure(Exception("Failed to extract facial features. Please ensure good lighting."))
 
             val contact = FaceContact(
                 id = UUID.randomUUID().toString(),
@@ -368,7 +448,8 @@ class FaceRecognitionManager(
             registeredContacts.add(contact)
             saveRegisteredContacts()
 
-            Log.i(tag, "Successfully enrolled face for: $trimmedName")
+            lastDiagnostic = "Enrolled: $trimmedName (${registeredContacts.size} contacts)"
+            Log.i(tag, "Successfully enrolled face contact for: $trimmedName")
             return Result.success(contact)
 
         } catch (e: Exception) {

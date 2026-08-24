@@ -92,11 +92,6 @@ class MainActivity : AppCompatActivity() {
     private val activeRecognizedFaces = AtomicReference<List<RecognizedFace>>(emptyList())
     private var lastFaceScanTime = 0L
 
-    // Zero-allocation reusable Bitmaps
-    private var reusableRotatedBitmap: Bitmap? = null
-    private var reusableCanvas: Canvas? = null
-    private val reusablePaint = Paint(Paint.FILTER_BITMAP_FLAG)
-
     // OCR Request State & Debounce Guard
     private val isOcrProcessing = AtomicBoolean(false)
     private var lastOcrRequestTime = 0L
@@ -181,7 +176,7 @@ class MainActivity : AppCompatActivity() {
                     measureAiFps()
                 } else {
                     try {
-                        Thread.sleep(2) // Ultra-responsive frame consumption
+                        Thread.sleep(2)
                     } catch (_: InterruptedException) {
                         break
                     }
@@ -201,19 +196,20 @@ class MainActivity : AppCompatActivity() {
         val detections = detector.detect(bitmap)
         currentDetections = detections
 
-        // 2. Asynchronous Face Recognition Dispatch (Parallel non-blocking worker)
+        // 2. Asynchronous Face Recognition Dispatch (Parallel non-blocking worker with Dual Strategy)
         val now = SystemClock.elapsedRealtime()
         val hasPerson = detections.any { it.className.equals("person", ignoreCase = true) }
 
         if ((hasPerson || (now - lastFaceScanTime >= 400L)) && !isFaceScanning.get()) {
             lastFaceScanTime = now
             if (isFaceScanning.compareAndSet(false, true)) {
+                // Pass immutable frame snapshot and detections to background face worker
                 faceExecutor.execute {
                     try {
-                        val faces = faceRecognitionManager.detectAndRecognizeFaces(bitmap)
+                        val faces = faceRecognitionManager.detectAndRecognizeFaces(bitmap, detections)
                         activeRecognizedFaces.set(faces)
                     } catch (e: Exception) {
-                        Log.e(tag, "Face scan error: ${e.message}")
+                        Log.e(tag, "Face scan error: ${e.message}", e)
                     } finally {
                         isFaceScanning.set(false)
                     }
@@ -236,9 +232,10 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // 5. Update UI Overlay
+        // 5. Update UI Overlay with Telemetry
         val sourceLabel = if (currentSource == VideoInputSource.PHONE_CAMERA) "Phone" else "ESP32"
         val ttsStatus = if (ttsManager.isSpeaking) "SPEAKING" else "SILENT"
+        val faceDiag = faceRecognitionManager.lastDiagnostic
 
         runOnUiThread {
             binding.overlayView.cameraFps = currentCameraFps
@@ -247,6 +244,7 @@ class MainActivity : AppCompatActivity() {
             binding.overlayView.activeDevice = "${detector.activeDevice} [$sourceLabel]"
             binding.overlayView.ttsStatus = ttsStatus
             binding.overlayView.errorMessage = detector.lastError
+            binding.overlayView.faceDiagnostic = faceDiag
             binding.overlayView.updateResults(detections, event, faces)
         }
     }
@@ -410,7 +408,7 @@ class MainActivity : AppCompatActivity() {
                     setOnClickListener {
                         faceRecognitionManager.deleteContact(contact.id)
                         Toast.makeText(this@MainActivity, "Deleted ${contact.name}", Toast.LENGTH_SHORT).show()
-                        showFaceContactsDialog() // Refresh
+                        showFaceContactsDialog()
                     }
                 }
 
@@ -456,10 +454,10 @@ class MainActivity : AppCompatActivity() {
                     val frameToEnroll = latestBitmap ?: bitmap
                     Toast.makeText(this, "Scanning and registering face for $name...", Toast.LENGTH_SHORT).show()
 
-                    // Execute ML Kit detection & embedding extraction on background worker thread
-                    lifecycleScope.launch(Dispatchers.Default) {
+                    // Execute on dedicated face worker thread (never on UI thread)
+                    faceExecutor.execute {
                         val result = faceRecognitionManager.registerFaceFromBitmap(name, frameToEnroll)
-                        withContext(Dispatchers.Main) {
+                        runOnUiThread {
                             if (result.isSuccess) {
                                 Toast.makeText(this@MainActivity, "Enrolled: $name successfully!", Toast.LENGTH_LONG).show()
                                 ttsManager.speak("Face registered for $name.", priority = 60, severity = "INFO")
@@ -528,7 +526,6 @@ class MainActivity : AppCompatActivity() {
         faceRecognitionManager.close()
         ocrManager.close()
         ttsManager.shutdown()
-        reusableRotatedBitmap?.recycle()
     }
 
     private fun startCamera() {
@@ -594,7 +591,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Zero-allocation rotation into reusable Bitmap.
+     * Thread-safe snapshot creation with proper rotation.
      */
     private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
         return try {
@@ -602,26 +599,10 @@ class MainActivity : AppCompatActivity() {
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
 
             if (rotationDegrees != 0) {
-                val targetW = if (rotationDegrees == 90 || rotationDegrees == 270) rawBitmap.height else rawBitmap.width
-                val targetH = if (rotationDegrees == 90 || rotationDegrees == 270) rawBitmap.width else rawBitmap.height
-
-                var rotated = reusableRotatedBitmap
-                if (rotated == null || rotated.width != targetW || rotated.height != targetH) {
-                    rotated?.recycle()
-                    rotated = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
-                    reusableRotatedBitmap = rotated
-                    reusableCanvas = Canvas(rotated)
-                }
-
-                val canvas = reusableCanvas!!
                 val matrix = Matrix().apply {
-                    postTranslate(-rawBitmap.width / 2f, -rawBitmap.height / 2f)
                     postRotate(rotationDegrees.toFloat())
-                    postTranslate(targetW / 2f, targetH / 2f)
                 }
-
-                canvas.drawBitmap(rawBitmap, matrix, reusablePaint)
-                rotated
+                Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
             } else {
                 rawBitmap
             }
