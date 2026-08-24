@@ -18,6 +18,14 @@ enum class TrackState {
     DEPARTED    // Expired and removed
 }
 
+enum class RecognitionState {
+    UNKNOWN,      // Person detected, face not yet identified
+    CONFIRMING,   // Face match candidate observed
+    RECOGNIZED,   // Confidently identified, pending speech announcement
+    ANNOUNCED,    // Name announced via TTS
+    TRACKING      // Actively tracking identified person
+}
+
 data class HazardEvent(
     val warningText: String? = null,
     val speakPriority: Int = 0,
@@ -44,7 +52,10 @@ data class TrackedItem(
     var isObstructionAnnounced: Boolean = false,
     var criticalTier: Int = 0,
     var lastAnnouncedTimeMs: Long = 0L,
+    var recognitionState: RecognitionState = RecognitionState.UNKNOWN,
     var faceName: String? = null,
+    var faceConfidence: Float = 0f,
+    var faceConfirmHits: Int = 0,
     var isFacingUser: Boolean = false,
     val classHistory: ArrayDeque<String> = ArrayDeque(8)
 ) {
@@ -53,7 +64,6 @@ data class TrackedItem(
     }
 
     fun updateClass(newClass: String) {
-        // If track is already assigned a specific face name, lock the face name permanently
         if (faceName != null) {
             className = faceName!!
             return
@@ -64,10 +74,18 @@ data class TrackedItem(
         className = classHistory.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: newClass
     }
 
-    fun attachFace(name: String?, facingUser: Boolean) {
-        if (name != null && name.isNotBlank()) {
-            faceName = name
-            className = name
+    fun attachFace(name: String?, confidence: Float, facingUser: Boolean) {
+        if (name != null && name.isNotBlank() && confidence >= 0.44f) {
+            faceConfirmHits++
+            faceConfidence = confidence
+
+            if (faceName != name) {
+                faceName = name
+                className = name
+                // Reset announcement state so the newly recognized identity is guaranteed to be spoken
+                recognitionState = RecognitionState.RECOGNIZED
+                isAnnounced = false
+            }
         }
         if (facingUser) {
             isFacingUser = true
@@ -107,7 +125,7 @@ class DecisionEngine {
     private val minFramesToConfirm = 2
     private val highConfidenceInstantThreshold = 0.52f
     private val minConfidenceThreshold = 0.30f
-    private val maxFramesMissing = 24
+    private val maxFramesMissing = 18 // ~1.2s grace period: cleanly re-arms when camera returns
 
     fun evaluate(
         detections: List<Detection>,
@@ -115,22 +133,25 @@ class DecisionEngine {
     ): HazardEvent {
         val now = SystemClock.elapsedRealtime()
 
-        // 1. Filter raw detections
-        val validDetections = detections.filter { it.confidence >= 0.25f }
+        // 1. Filter raw detections by confidence gate
+        val filteredDetections = detections.filter { it.confidence >= 0.25f }
 
-        // 2. Associate detected faces with person detections (attach recognized contact name or eye contact)
-        for (det in validDetections) {
+        // 2. Spatial Overlap & Containment Deduplication (Person NMS)
+        // Merges multi-zone body boxes, torso vs full body, and overlapping person candidates
+        val deduplicatedDetections = deduplicateDetections(filteredDetections)
+
+        // 3. Associate detected faces with person detections
+        for (det in deduplicatedDetections) {
             val isPersonLike = det.className.equals("person", ignoreCase = true) || det.className.equals("face", ignoreCase = true)
             if (isPersonLike) {
                 for (face in recognizedFaces) {
                     val fcx = face.bbox.centerX()
                     val fcy = face.bbox.centerY()
-                    // Check if face center falls inside or near the person detection bounding box
-                    val marginX = det.bbox.width() * 0.15f
-                    val marginY = det.bbox.height() * 0.15f
+                    val marginX = det.bbox.width() * 0.20f
+                    val marginY = det.bbox.height() * 0.20f
                     if (fcx >= det.bbox.left - marginX && fcx <= det.bbox.right + marginX &&
                         fcy >= det.bbox.top - marginY && fcy <= det.bbox.bottom + marginY) {
-                        if (face.isKnown && face.name != null) {
+                        if (face.isKnown && face.name != null && face.confidence >= 0.44f) {
                             det.className = face.name
                         }
                         break
@@ -143,10 +164,10 @@ class DecisionEngine {
         var meanDy = 0f
         var motionSampleCount = 0
 
-        // 3. Spatial & Motion-Tolerant Object Tracking
+        // 4. Robust Spatial & Motion-Tolerant Tracking
         val matchedTrackIds = mutableSetOf<Int>()
 
-        for (det in validDetections) {
+        for (det in deduplicatedDetections) {
             var bestTrackId: Int? = null
             var bestScore = 0.0f
 
@@ -193,14 +214,14 @@ class DecisionEngine {
                 track.updateClass(det.className)
                 track.smoothBbox(det.bbox)
                 track.smoothDistance(det.estimatedDistanceM)
-                track.region = depthEstimator.classifyRegion(track.center.first, track.region)
+                track.region = classifyTrackRegion(track.bbox, track.center.first, track.region)
 
-                // Attach face identification if matched
+                // Match face recognition state
                 for (face in recognizedFaces) {
                     val fcx = face.bbox.centerX()
                     val fcy = face.bbox.centerY()
                     if (fcx >= track.bbox.left && fcx <= track.bbox.right && fcy >= track.bbox.top && fcy <= track.bbox.bottom) {
-                        track.attachFace(if (face.isKnown) face.name else null, face.isFacingUser)
+                        track.attachFace(if (face.isKnown) face.name else null, face.confidence, face.isFacingUser)
                         break
                     }
                 }
@@ -213,7 +234,7 @@ class DecisionEngine {
             } else {
                 if (det.confidence >= 0.30f) {
                     val newId = nextTrackId++
-                    val initialRegion = depthEstimator.classifyRegion(det.center.first)
+                    val initialRegion = classifyTrackRegion(det.bbox, det.center.first)
                     val isInstantConfirm = det.confidence >= highConfidenceInstantThreshold
                     val newTrack = TrackedItem(
                         id = newId,
@@ -226,12 +247,11 @@ class DecisionEngine {
                         state = if (isInstantConfirm) TrackState.CONFIRMED else TrackState.CANDIDATE
                     )
 
-                    // Attach face info immediately on spawn if available
                     for (face in recognizedFaces) {
                         val fcx = face.bbox.centerX()
                         val fcy = face.bbox.centerY()
                         if (fcx >= det.bbox.left && fcx <= det.bbox.right && fcy >= det.bbox.top && fcy <= det.bbox.bottom) {
-                            newTrack.attachFace(if (face.isKnown) face.name else null, face.isFacingUser)
+                            newTrack.attachFace(if (face.isKnown) face.name else null, face.confidence, face.isFacingUser)
                             break
                         }
                     }
@@ -244,14 +264,14 @@ class DecisionEngine {
 
         val isGlobalCameraPan = motionSampleCount >= 2 && (abs(meanDx / motionSampleCount) > 0.05f || abs(meanDy / motionSampleCount) > 0.05f)
 
-        // 4. Age out missing tracks
+        // 5. Age out missing tracks (18 frame grace period allows instant re-arming upon re-entry)
         val iterator = trackedObjects.entries.iterator()
         while (iterator.hasNext()) {
             val entry = iterator.next()
             if (entry.key !in matchedTrackIds) {
                 entry.value.framesMissing++
 
-                val effectiveMaxMissing = if (isGlobalCameraPan) maxFramesMissing + 6 else maxFramesMissing
+                val effectiveMaxMissing = if (isGlobalCameraPan) maxFramesMissing + 4 else maxFramesMissing
 
                 if (entry.value.framesMissing >= effectiveMaxMissing) {
                     entry.value.state = TrackState.DEPARTED
@@ -266,7 +286,7 @@ class DecisionEngine {
             it.state == TrackState.CONFIRMED && it.framesMissing < 12 && (it.confidence >= minConfidenceThreshold || it.framesMissing > 0)
         }
 
-        // 5. Path Cleared Event
+        // 6. Path Cleared Event
         if (activeTracks.isEmpty()) {
             if (lastHadActiveObjects) {
                 lastHadActiveObjects = false
@@ -285,7 +305,7 @@ class DecisionEngine {
 
         lastHadActiveObjects = true
 
-        // 6. Danger Zone Obstruction (<= 1.8m in Center Corridor)
+        // 7. ALERT TIER 1: Imminent Obstruction Danger (<= 1.8m in Walking Path) - Priority 70-90
         val centerObstacles = activeTracks.filter { it.region == "center" && it.distanceM <= 1.8f }
         if (centerObstacles.isNotEmpty()) {
             val closest = centerObstacles.minByOrNull { it.distanceM }!!
@@ -311,13 +331,42 @@ class DecisionEngine {
             }
         }
 
-        // 7. Multi-Object Scene Understanding
+        // 8. ALERT TIER 2: Newly Recognized Face Event - Priority 65
+        // Fires immediately when a person transitions from UNKNOWN to RECOGNIZED
+        val newlyRecognizedContacts = activeTracks.filter {
+            it.faceName != null && it.recognitionState == RecognitionState.RECOGNIZED && !it.isAnnounced
+        }
+
+        if (newlyRecognizedContacts.isNotEmpty()) {
+            val contact = newlyRecognizedContacts.first()
+            contact.isAnnounced = true
+            contact.recognitionState = RecognitionState.ANNOUNCED
+            contact.lastAnnouncedTimeMs = now
+
+            val announcement = formatContactAnnouncement(contact)
+            lastSpokenEventText = announcement
+            lastSpokenEventTime = now
+            return HazardEvent(
+                warningText = announcement,
+                speakPriority = 65, // High priority: preempts general scene, never dropped
+                severity = "INFO",
+                category = "face_recognition",
+                hazardDetected = true,
+                activeHazard = contact,
+                allHazards = activeTracks
+            )
+        }
+
+        // 9. ALERT TIER 3: Multi-Object Scene Understanding - Priority 50
         val unannouncedConfirmedObjects = activeTracks.filter { !it.isAnnounced }
 
         if (unannouncedConfirmedObjects.isNotEmpty()) {
             for (t in activeTracks) {
                 t.isAnnounced = true
                 t.lastAnnouncedTimeMs = now
+                if (t.faceName != null && t.recognitionState == RecognitionState.UNKNOWN) {
+                    t.recognitionState = RecognitionState.ANNOUNCED
+                }
             }
 
             val sceneDesc = formatSceneDescription(activeTracks)
@@ -341,9 +390,98 @@ class DecisionEngine {
         )
     }
 
+    /**
+     * Deduplicates raw bounding boxes using IoU, Containment, and Zone-spanning proximity.
+     * Prevents 1 physical person spanning multiple regions from being treated as 2 people.
+     */
+    private fun deduplicateDetections(rawList: List<Detection>): List<Detection> {
+        if (rawList.size <= 1) return rawList
+
+        val persons = rawList.filter { it.className.equals("person", ignoreCase = true) || it.className.equals("face", ignoreCase = true) }
+            .sortedByDescending { it.confidence }
+        val nonPersons = rawList.filter { !it.className.equals("person", ignoreCase = true) && !it.className.equals("face", ignoreCase = true) }
+
+        val mergedPersons = mutableListOf<Detection>()
+
+        for (p in persons) {
+            var merged = false
+            for (i in mergedPersons.indices) {
+                val existing = mergedPersons[i]
+                if (shouldMergePersons(p.bbox, existing.bbox, p.center, existing.center)) {
+                    val left = min(p.bbox.left, existing.bbox.left)
+                    val top = min(p.bbox.top, existing.bbox.top)
+                    val right = max(p.bbox.right, existing.bbox.right)
+                    val bottom = max(p.bbox.bottom, existing.bbox.bottom)
+                    val mergedBbox = RectF(left, top, right, bottom)
+                    val cx = (left + right) * 0.5f
+                    val cy = (top + bottom) * 0.5f
+
+                    mergedPersons[i] = existing.copy(
+                        confidence = max(p.confidence, existing.confidence),
+                        bbox = mergedBbox,
+                        center = Pair(cx, cy),
+                        areaRatio = mergedBbox.width() * mergedBbox.height(),
+                        estimatedDistanceM = min(p.estimatedDistanceM, existing.estimatedDistanceM),
+                        region = classifyTrackRegion(mergedBbox, cx)
+                    )
+                    merged = true
+                    break
+                }
+            }
+            if (!merged) {
+                mergedPersons.add(p)
+            }
+        }
+
+        return mergedPersons + nonPersons
+    }
+
+    private fun shouldMergePersons(
+        b1: RectF,
+        b2: RectF,
+        c1: Pair<Float, Float>,
+        c2: Pair<Float, Float>
+    ): Boolean {
+        val iou = computeIoU(b1, b2)
+        val cont = computeContainment(b1, b2)
+        val cdist = computeCenterDist(c1, c2)
+        val dx = abs(c1.first - c2.first)
+        val dy = abs(c1.second - c2.second)
+
+        val hOverlap = max(0f, min(b1.right, b2.right) - max(b1.left, b2.left))
+        val minW = min(b1.width(), b2.width())
+        val hRatio = if (minW > 0f) hOverlap / minW else 0f
+
+        val vOverlap = max(0f, min(b1.bottom, b2.bottom) - max(b1.top, b2.top))
+        val minH = min(b1.height(), b2.height())
+        val vRatio = if (minH > 0f) vOverlap / minH else 0f
+
+        // Condition 1: Significant 2D IoU or Containment
+        if (iou > 0.25f || cont > 0.45f) return true
+
+        // Condition 2: Same physical body spanning adjacent zones (high vertical overlap > 60% and horizontal overlap/proximity)
+        if (vRatio > 0.60f && (hRatio > 0.15f || dx < 0.28f) && dy < 0.20f) return true
+
+        // Condition 3: Proximity close center distance
+        if (cdist < 0.22f) return true
+
+        return false
+    }
+
+    /**
+     * Classifies primary region for a bounding box, ensuring multi-zone spanning objects are centered/ahead.
+     */
+    private fun classifyTrackRegion(bbox: RectF, cx: Float, currentRegion: String? = null): String {
+        if (bbox.left < 0.35f && bbox.right > 0.65f) {
+            return "center"
+        }
+        return depthEstimator.classifyRegion(cx, currentRegion)
+    }
+
     fun getFullSceneSummary(detections: List<Detection>): String {
         val items = if (detections.isNotEmpty()) {
-            detections.map {
+            val deduped = deduplicateDetections(detections)
+            deduped.map {
                 TrackedItem(
                     id = 0,
                     className = it.className,
@@ -364,16 +502,35 @@ class DecisionEngine {
         return "Scene summary: $desc"
     }
 
+    private fun formatContactAnnouncement(contact: TrackedItem): String {
+        val name = contact.faceName ?: contact.className
+        val distStr = formatDistanceStr(contact.distanceM)
+        val posStr = when (contact.region) {
+            "center" -> "ahead"
+            "left" -> "on your left"
+            else -> "on your right"
+        }
+
+        return if (contact.isFacingUser) {
+            "$name is looking at you $posStr$distStr."
+        } else {
+            "$name $posStr$distStr."
+        }
+    }
+
     private fun formatSceneDescription(tracks: List<TrackedItem>): String {
         if (tracks.isEmpty()) return "Path is clear."
 
         val sentences = mutableListOf<String>()
 
-        // Process named contacts & people with eye contact first
-        val specialPeople = tracks.filter { it.faceName != null || it.isFacingUser }
-        val otherObjects = tracks.filter { it !in specialPeople }
+        // 1. Separate person tracks vs other object tracks
+        val personTracks = tracks.filter { it.className.equals("person", ignoreCase = true) || it.faceName != null }
+        val otherObjects = tracks.filter { it !in personTracks }
 
-        for (person in specialPeople) {
+        // Format Person Detections based strictly on UNIQUE tracked individuals
+        if (personTracks.size == 1) {
+            val person = personTracks.first()
+            val name = person.faceName ?: "Person"
             val distStr = formatDistanceStr(person.distanceM)
             val posStr = when (person.region) {
                 "center" -> "ahead"
@@ -383,18 +540,30 @@ class DecisionEngine {
 
             val sentence = when {
                 person.faceName != null && person.isFacingUser ->
-                    "${person.faceName} is looking at you $posStr$distStr"
+                    "$name is looking at you $posStr$distStr"
                 person.faceName != null ->
-                    "${person.faceName} $posStr$distStr"
+                    "$name $posStr$distStr"
                 person.isFacingUser ->
                     "Person looking towards you $posStr$distStr"
                 else ->
                     "Person $posStr$distStr"
             }
             sentences.add(sentence)
+        } else if (personTracks.size >= 2) {
+            val countWord = numberToWord(personTracks.size)
+            val personDetails = personTracks.map { p ->
+                val name = p.faceName ?: "one"
+                val posStr = when (p.region) {
+                    "center" -> "ahead"
+                    "left" -> "on your left"
+                    else -> "on your right"
+                }
+                "$name $posStr"
+            }
+            sentences.add("${countWord.replaceFirstChar { it.uppercase() }} people detected: ${personDetails.joinToString(" and ")}")
         }
 
-        // Group remaining objects by category
+        // Format remaining object categories
         val classGroups = otherObjects.groupBy { it.className.lowercase() }
             .entries.sortedBy { (_, items) -> items.minOf { it.distanceM } }
             .take(3)
@@ -498,6 +667,21 @@ class DecisionEngine {
         val area2 = b2.width() * b2.height()
         val unionArea = area1 + area2 - interArea
         return if (unionArea > 0f) interArea / unionArea else 0f
+    }
+
+    private fun computeContainment(b1: RectF, b2: RectF): Float {
+        val left = max(b1.left, b2.left)
+        val top = max(b1.top, b2.top)
+        val right = min(b1.right, b2.right)
+        val bottom = min(b1.bottom, b2.bottom)
+
+        val interW = max(0f, right - left)
+        val interH = max(0f, bottom - top)
+        val interArea = interW * interH
+        if (interArea <= 0f) return 0f
+
+        val minArea = min(b1.width() * b1.height(), b2.width() * b2.height())
+        return if (minArea > 0f) interArea / minArea else 0f
     }
 
     private fun computeCenterDist(c1: Pair<Float, Float>, c2: Pair<Float, Float>): Float {

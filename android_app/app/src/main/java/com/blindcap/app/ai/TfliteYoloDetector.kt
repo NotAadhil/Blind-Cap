@@ -232,12 +232,58 @@ class TfliteYoloDetector(
                 classLabelHistory.clear()
             }
 
+            return applyNms(rawDetections)
+
         } catch (e: Exception) {
             lastError = "TFLite inference: ${e.message}"
             Log.e(tag, "Inference error: ${e.message}", e)
         }
 
         return rawDetections
+    }
+
+    /**
+     * Intra-class Non-Maximum Suppression to remove redundant candidate boxes.
+     */
+    private fun applyNms(detections: List<Detection>, iouThreshold: Float = 0.45f): List<Detection> {
+        if (detections.size <= 1) return detections
+
+        val sorted = detections.sortedByDescending { it.confidence }
+        val selected = mutableListOf<Detection>()
+
+        for (det in sorted) {
+            var shouldKeep = true
+            for (kept in selected) {
+                if (det.classId == kept.classId || (det.className.equals("person", true) && kept.className.equals("person", true))) {
+                    val iou = computeIoU(det.bbox, kept.bbox)
+                    if (iou > iouThreshold) {
+                        shouldKeep = false
+                        break
+                    }
+                }
+            }
+            if (shouldKeep) {
+                selected.add(det)
+            }
+        }
+        return selected
+    }
+
+    private fun computeIoU(b1: RectF, b2: RectF): Float {
+        val left = max(b1.left, b2.left)
+        val top = max(b1.top, b2.top)
+        val right = min(b1.right, b2.right)
+        val bottom = min(b1.bottom, b2.bottom)
+
+        val interW = max(0f, right - left)
+        val interH = max(0f, bottom - top)
+        val interArea = interW * interH
+        if (interArea <= 0f) return 0f
+
+        val area1 = b1.width() * b1.height()
+        val area2 = b2.width() * b2.height()
+        val unionArea = area1 + area2 - interArea
+        return if (unionArea > 0f) interArea / unionArea else 0f
     }
 
     /**

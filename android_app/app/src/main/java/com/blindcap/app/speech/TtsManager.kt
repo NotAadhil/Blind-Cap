@@ -175,7 +175,8 @@ class TtsManager(private val context: Context, private val onReadyCallback: (() 
             return
         }
 
-        val msg = SpeechMessage(priority, trimmed, severity)
+        val maxAge = if (priority >= 65) 5000L else 3000L
+        val msg = SpeechMessage(priority, trimmed, severity, maxAgeMs = maxAge)
 
         if (severity == "CRITICAL" || severity == "WARNING") {
             lastImportantWarning = trimmed
