@@ -1,9 +1,9 @@
-﻿package com.blindcap.app.ai
+package com.blindcap.app.ai
 
 import android.graphics.RectF
 
 data class Detection(
-    val className: String,
+    var className: String,
     val classId: Int,
     val confidence: Float,
     val bbox: RectF, // Normalized coordinates [0.0, 1.0] (left, top, right, bottom)

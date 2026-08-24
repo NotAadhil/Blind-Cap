@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Matrix
+import android.graphics.Paint
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -14,6 +16,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -27,6 +31,9 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.blindcap.app.ai.Detection
+import com.blindcap.app.ai.FaceContact
+import com.blindcap.app.ai.FaceRecognitionManager
+import com.blindcap.app.ai.RecognizedFace
 import com.blindcap.app.ai.TfliteYoloDetector
 import com.blindcap.app.databinding.ActivityMainBinding
 import com.blindcap.app.engine.DecisionEngine
@@ -38,6 +45,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -62,6 +72,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var depthEstimator: DepthEstimator
     private lateinit var detector: TfliteYoloDetector
+    private lateinit var faceRecognitionManager: FaceRecognitionManager
     private lateinit var decisionEngine: DecisionEngine
     private lateinit var ttsManager: TtsManager
     private lateinit var ocrManager: OcrManager
@@ -75,9 +86,18 @@ class MainActivity : AppCompatActivity() {
     private val isAiRunning = AtomicBoolean(true)
     private var aiWorkerThread: Thread? = null
 
+    // Zero-allocation reusable Bitmaps
+    private var reusableRotatedBitmap: Bitmap? = null
+    private var reusableCanvas: Canvas? = null
+    private val reusablePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+
     // OCR Request State & Debounce Guard
     private val isOcrProcessing = AtomicBoolean(false)
     private var lastOcrRequestTime = 0L
+
+    // Face Scan Periodic Counter
+    private var faceScanCounter = 0
+    private var latestRecognizedFaces: List<RecognizedFace> = emptyList()
 
     // FPS Measurement Instrumentation
     private var cameraFrameCount = 0
@@ -104,6 +124,7 @@ class MainActivity : AppCompatActivity() {
 
         depthEstimator = DepthEstimator()
         detector = TfliteYoloDetector(this, depthEstimator)
+        faceRecognitionManager = FaceRecognitionManager(this)
         decisionEngine = DecisionEngine()
         ocrManager = OcrManager()
 
@@ -120,6 +141,7 @@ class MainActivity : AppCompatActivity() {
             onStatusChanged = { status ->
                 runOnUiThread {
                     binding.txtStreamStatus.text = status
+                    binding.txtStreamStatus.visibility = if (status.isNotEmpty()) View.VISIBLE else View.GONE
                 }
             }
         )
@@ -154,7 +176,7 @@ class MainActivity : AppCompatActivity() {
                     measureAiFps()
                 } else {
                     try {
-                        Thread.sleep(6) // Short yield if waiting for next frame
+                        Thread.sleep(3) // Tight yield for responsive frame processing
                     } catch (_: InterruptedException) {
                         break
                     }
@@ -170,14 +192,28 @@ class MainActivity : AppCompatActivity() {
     private fun processAiFrame(bitmap: Bitmap) {
         latestBitmap = bitmap
 
-        // 1. Hardware Inference & Pre/Post Processing (Optimized memory reuse)
+        // 1. Hardware Object Detection (YOLO26n / YOLOv8)
         val detections = detector.detect(bitmap)
         currentDetections = detections
 
-        // 2. Decision Engine with Scale-Invariant Tracking & Camera Motion Compensation
-        val event = decisionEngine.evaluate(detections)
+        // 2. Real-Time Face Recognition (Identifies saved contacts by name)
+        // Run face detection if any person is in frame, or periodically every 3 frames
+        val hasPerson = detections.any { it.className.equals("person", ignoreCase = true) }
+        val shouldScanFaces = hasPerson || (faceScanCounter % 3 == 0)
+        faceScanCounter++
 
-        // 3. Dispatch Speech if warranted
+        val faces = if (shouldScanFaces) {
+            val detectedFaces = faceRecognitionManager.detectAndRecognizeFaces(bitmap)
+            latestRecognizedFaces = detectedFaces
+            detectedFaces
+        } else {
+            latestRecognizedFaces
+        }
+
+        // 3. Decision Engine with Scale-Invariant Tracking & Camera Motion Compensation
+        val event = decisionEngine.evaluate(detections, faces)
+
+        // 4. Dispatch Speech if warranted
         if (event.warningText != null) {
             ttsManager.speak(
                 text = event.warningText,
@@ -186,7 +222,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // 4. Update UI Overlay with Performance Breakdown
+        // 5. Update UI Overlay with Performance Breakdown
         val sourceLabel = if (currentSource == VideoInputSource.PHONE_CAMERA) "Phone" else "ESP32"
         val ttsStatus = if (ttsManager.isSpeaking) "SPEAKING" else "SILENT"
 
@@ -197,7 +233,7 @@ class MainActivity : AppCompatActivity() {
             binding.overlayView.activeDevice = "${detector.activeDevice} [$sourceLabel]"
             binding.overlayView.ttsStatus = ttsStatus
             binding.overlayView.errorMessage = detector.lastError
-            binding.overlayView.updateResults(detections, event)
+            binding.overlayView.updateResults(detections, event, faces)
         }
     }
 
@@ -237,17 +273,22 @@ class MainActivity : AppCompatActivity() {
         binding.btnStreamSettings.setOnClickListener {
             showStreamSettingsDialog()
         }
+
+        binding.btnFaces.setOnClickListener {
+            showFaceContactsDialog()
+        }
     }
 
     private fun updateSourceUi() {
         if (currentSource == VideoInputSource.PHONE_CAMERA) {
-            binding.btnSourceToggle.text = "Source: Phone Cam"
+            binding.btnSourceToggle.text = "Source: Phone"
             binding.btnSourceToggle.setBackgroundColor(0xFF333333.toInt())
             binding.viewFinder.visibility = View.VISIBLE
             binding.esp32StreamView.visibility = View.GONE
             binding.txtStreamStatus.text = ""
+            binding.txtStreamStatus.visibility = View.GONE
         } else {
-            binding.btnSourceToggle.text = "Source: ESP32-CAM"
+            binding.btnSourceToggle.text = "Source: ESP32"
             binding.btnSourceToggle.setBackgroundColor(0xFF994400.toInt())
             binding.viewFinder.visibility = View.GONE
             binding.esp32StreamView.visibility = View.VISIBLE
@@ -258,7 +299,6 @@ class MainActivity : AppCompatActivity() {
         currentSource = VideoInputSource.ESP32_CAM
         updateSourceUi()
 
-        // Unbind phone camera to conserve battery
         try {
             cameraProvider?.unbindAll()
         } catch (_: Exception) {}
@@ -274,11 +314,9 @@ class MainActivity : AppCompatActivity() {
         currentSource = VideoInputSource.PHONE_CAMERA
         updateSourceUi()
 
-        // Stop ESP32 stream
         mjpegStreamReader.stop()
         decisionEngine.reset()
 
-        // Rebind Phone Camera
         startCamera()
         ttsManager.speak("Switched to phone camera.", priority = 60, severity = "INFO")
     }
@@ -309,74 +347,156 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun setupGestures() {
-        gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                if (ttsManager.isSpeaking || ttsManager.isOcrActive) {
-                    stopSpeech()
-                } else {
-                    ttsManager.repeatLast()
-                }
-                return true
-            }
+    /**
+     * Dialog to manage and register Face Identification Contacts.
+     */
+    private fun showFaceContactsDialog() {
+        val contacts = faceRecognitionManager.getRegisteredContacts()
 
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                ttsManager.isMuted = !ttsManager.isMuted
-                val status = if (ttsManager.isMuted) "Speech muted." else "Speech active."
-                Toast.makeText(this@MainActivity, status, Toast.LENGTH_SHORT).show()
-                if (!ttsManager.isMuted) {
-                    ttsManager.speak("Speech active.", priority = 60, severity = "INFO")
-                }
-                return true
-            }
-
-            override fun onLongPress(e: MotionEvent) {
-                if (ttsManager.isOcrActive || ttsManager.isSpeaking) {
-                    stopSpeech()
-                } else {
-                    triggerOcrReading()
-                }
-            }
-        })
-
-        binding.root.setOnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
-            true
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(50, 30, 50, 10)
         }
+
+        val headerText = TextView(this).apply {
+            text = "Registered Face Contacts (${contacts.size}):"
+            textSize = 15f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, 0, 0, 12)
+        }
+        layout.addView(headerText)
+
+        if (contacts.isEmpty()) {
+            val emptyText = TextView(this).apply {
+                text = "No contacts enrolled yet.\nTap 'Enroll New Face' to save a friend or family member."
+                textSize = 13f
+                setTextColor(0xFF999999.toInt())
+                setPadding(0, 10, 0, 20)
+            }
+            layout.addView(emptyText)
+        } else {
+            val dateFormat = SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
+            for (contact in contacts) {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, 8, 0, 8)
+                    gravity = android.view.Gravity.CENTER_VERTICAL
+                }
+
+                val info = TextView(this).apply {
+                    text = "👤 ${contact.name} (${dateFormat.format(Date(contact.enrolledTimestamp))})"
+                    textSize = 14f
+                    setTextColor(0xFF00FFCC.toInt())
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+
+                val delBtn = android.widget.Button(this).apply {
+                    text = "Delete"
+                    textSize = 11f
+                    setBackgroundColor(0xFF882222.toInt())
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setOnClickListener {
+                        faceRecognitionManager.deleteContact(contact.id)
+                        Toast.makeText(this@MainActivity, "Deleted ${contact.name}", Toast.LENGTH_SHORT).show()
+                        showFaceContactsDialog() // Refresh
+                    }
+                }
+
+                row.addView(info)
+                row.addView(delBtn)
+                layout.addView(row)
+            }
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Face Identification")
+            .setView(layout)
+            .setPositiveButton("Enroll New Face") { _, _ ->
+                promptEnrollNewFace()
+            }
+            .setNeutralButton("Clear All") { _, _ ->
+                faceRecognitionManager.clearAllContacts()
+                Toast.makeText(this, "Cleared all face contacts", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun promptEnrollNewFace() {
+        val bitmap = latestBitmap
+        if (bitmap == null) {
+            Toast.makeText(this, "Camera not ready. Point camera at face first.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val input = EditText(this).apply {
+            hint = "Enter person's name (e.g. Mom, John, Doctor)"
+            isSingleLine = true
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Enroll Face")
+            .setMessage("Point camera at your friend or family member's face and enter their name:")
+            .setView(input)
+            .setPositiveButton("Save Contact") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotEmpty()) {
+                    val frameToEnroll = latestBitmap ?: bitmap
+                    val result = faceRecognitionManager.registerFaceFromBitmap(name, frameToEnroll)
+                    if (result.isSuccess) {
+                        Toast.makeText(this, "Enrolled: $name", Toast.LENGTH_LONG).show()
+                        ttsManager.speak("Face registered for $name.", priority = 60, severity = "INFO")
+                    } else {
+                        val err = result.exceptionOrNull()?.message ?: "Could not detect face"
+                        Toast.makeText(this, "Enrollment failed: $err", Toast.LENGTH_LONG).show()
+                        ttsManager.speak("Could not find face. Please try again.", priority = 60, severity = "INFO")
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun setupActionButtons() {
         binding.btnOcr.setOnClickListener {
-            if (ttsManager.isOcrActive || ttsManager.isSpeaking) {
-                stopSpeech()
-            } else {
-                triggerOcrReading()
-            }
-        }
-
-        binding.btnOcr.setOnLongClickListener {
-            stopSpeech()
-            true
+            triggerOcrReading()
         }
 
         binding.btnScene.setOnClickListener {
-            if (ttsManager.isSpeaking) {
-                stopSpeech()
-            } else {
-                triggerSceneSummary()
-            }
+            triggerSceneSummary()
         }
+    }
 
-        binding.btnScene.setOnLongClickListener {
-            stopSpeech()
+    private fun setupGestures() {
+        gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (ttsManager.isSpeaking) {
+                    stopSpeech()
+                    return true
+                }
+                return false
+            }
+
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                triggerSceneSummary()
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                stopSpeech()
+            }
+        })
+
+        binding.overlayView.setOnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
             true
         }
     }
 
     private fun stopSpeech() {
         ttsManager.stop()
-        isOcrProcessing.set(false)
-        Toast.makeText(this, "Speech stopped.", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Speech stopped", Toast.LENGTH_SHORT).show()
     }
 
     override fun onDestroy() {
@@ -386,8 +506,10 @@ class MainActivity : AppCompatActivity() {
         mjpegStreamReader.stop()
         cameraExecutor.shutdown()
         detector.close()
+        faceRecognitionManager.close()
         ocrManager.close()
         ttsManager.shutdown()
+        reusableRotatedBitmap?.recycle()
     }
 
     private fun startCamera() {
@@ -402,8 +524,9 @@ class MainActivity : AppCompatActivity() {
                 it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
             }
 
+            // High-Performance 480x480 analysis resolution (minimizes memory & GC load)
             val imageAnalysis = ImageAnalysis.Builder()
-                .setTargetResolution(android.util.Size(640, 480))
+                .setTargetResolution(android.util.Size(480, 480))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
 
@@ -436,27 +559,47 @@ class MainActivity : AppCompatActivity() {
         try {
             val bitmap = imageProxyToBitmap(imageProxy)
             if (bitmap != null) {
-                // Non-blocking handoff: set latest frame atomically for the AI worker thread
+                // Non-blocking atomic handoff for AI worker
                 latestFrameRef.set(bitmap)
             }
         } catch (e: Exception) {
             Log.e(tag, "Error extracting image frame: ${e.message}")
         } finally {
-            // Immediately close imageProxy so CameraX buffer pool is NEVER starved!
             imageProxy.close()
         }
     }
 
+    /**
+     * Zero-allocation rotation into reusable Bitmap.
+     */
     private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
         return try {
-            val bitmap = imageProxy.toBitmap()
+            val rawBitmap = imageProxy.toBitmap()
             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+
             if (rotationDegrees != 0) {
-                val matrix = Matrix()
-                matrix.postRotate(rotationDegrees.toFloat())
-                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+                val targetW = if (rotationDegrees == 90 || rotationDegrees == 270) rawBitmap.height else rawBitmap.width
+                val targetH = if (rotationDegrees == 90 || rotationDegrees == 270) rawBitmap.width else rawBitmap.height
+
+                var rotated = reusableRotatedBitmap
+                if (rotated == null || rotated.width != targetW || rotated.height != targetH) {
+                    rotated?.recycle()
+                    rotated = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+                    reusableRotatedBitmap = rotated
+                    reusableCanvas = Canvas(rotated)
+                }
+
+                val canvas = reusableCanvas!!
+                val matrix = Matrix().apply {
+                    postTranslate(-rawBitmap.width / 2f, -rawBitmap.height / 2f)
+                    postRotate(rotationDegrees.toFloat())
+                    postTranslate(targetW / 2f, targetH / 2f)
+                }
+
+                canvas.drawBitmap(rawBitmap, matrix, reusablePaint)
+                rotated
             } else {
-                bitmap
+                rawBitmap
             }
         } catch (e: Exception) {
             Log.e(tag, "toBitmap error: ${e.message}")
@@ -488,27 +631,18 @@ class MainActivity : AppCompatActivity() {
         return super.dispatchKeyEvent(event)
     }
 
-    /**
-     * Trigger OCR text reading with double-click / stacking protection.
-     * Prevents multiple simultaneous OCR extractions and debounces rapid presses.
-     */
     private fun triggerOcrReading() {
         val now = SystemClock.elapsedRealtime()
 
-        // 1. Debounce guard: reject presses faster than 1.5 seconds apart
         if (now - lastOcrRequestTime < 1500L) {
-            Log.d(tag, "Ignored rapid OCR button press (debounce window)")
             return
         }
 
-        // 2. Concurrency guard: reject if an OCR scan is actively running or TTS is reading previous OCR
         if (!isOcrProcessing.compareAndSet(false, true)) {
-            Log.d(tag, "Ignored OCR press - another OCR request is currently in flight")
             return
         }
 
         if (ttsManager.isOcrActive) {
-            Log.d(tag, "Ignored OCR press - TTS is currently reading previous text")
             isOcrProcessing.set(false)
             return
         }
@@ -521,7 +655,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        ttsManager.speak("Reading text...", priority = 75, severity = "INFO")
+        ttsManager.speak("Reading text...", priority = 80, severity = "INFO")
 
         lifecycleScope.launch {
             try {
@@ -532,8 +666,11 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 Log.e(tag, "OCR processing error: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    ttsManager.speak("Could not read text.", priority = 70, severity = "INFO")
+                }
             } finally {
-                delay(1200L) // Debounce before allowing next scan
+                delay(600L)
                 isOcrProcessing.set(false)
             }
         }
@@ -541,8 +678,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun triggerSceneSummary() {
         val summary = decisionEngine.getFullSceneSummary(currentDetections)
-        ttsManager.speak(summary, priority = 75, severity = "INFO")
-        Toast.makeText(this@MainActivity, summary, Toast.LENGTH_LONG).show()
+        ttsManager.speak(summary, priority = 80, severity = "INFO")
+        Toast.makeText(this, summary, Toast.LENGTH_LONG).show()
     }
 
     private fun allPermissionsGranted() = ContextCompat.checkSelfPermission(

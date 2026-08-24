@@ -93,11 +93,31 @@ class DecisionEngine {
     private val maxFramesMissing = 24 // ~1.8 seconds grace period for fast camera pans / temporary loss
     private val announcementCooldownMs = 15000L // 15 seconds cooldown per scene composition
 
-    fun evaluate(detections: List<Detection>): HazardEvent {
+    fun evaluate(
+        detections: List<Detection>,
+        recognizedFaces: List<com.blindcap.app.ai.RecognizedFace> = emptyList()
+    ): HazardEvent {
         val now = SystemClock.elapsedRealtime()
 
         // 1. Filter raw detections by user-specified 0.32 threshold (with borderline 0.25 allowed for active tracks)
         val validDetections = detections.filter { it.confidence >= 0.25f }
+
+        // 2. Associate detected faces with person detections (enhance with known name or eye contact)
+        for (det in validDetections) {
+            if (det.className.equals("person", ignoreCase = true) || det.className.equals("face", ignoreCase = true)) {
+                for (face in recognizedFaces) {
+                    val fcx = face.bbox.centerX()
+                    val fcy = face.bbox.centerY()
+                    // Check if face center falls within person bounding box
+                    if (fcx >= det.bbox.left && fcx <= det.bbox.right && fcy >= det.bbox.top && fcy <= det.bbox.bottom) {
+                        if (face.isKnown && face.name != null) {
+                            det.className = face.name
+                        }
+                        break
+                    }
+                }
+            }
+        }
 
         // 2. Estimate Global Scene Motion (Camera Movement Compensation)
         // Check if existing tracks have shifted in a consistent direction

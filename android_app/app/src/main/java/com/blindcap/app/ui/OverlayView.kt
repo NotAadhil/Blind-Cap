@@ -18,6 +18,7 @@ class OverlayView @JvmOverloads constructor(
 ) : View(context, attrs, defStyleAttr) {
 
     private var detections: List<Detection> = emptyList()
+    private var recognizedFaces: List<com.blindcap.app.ai.RecognizedFace> = emptyList()
     private var hazardEvent: HazardEvent? = null
 
     var cameraFps: Float = 0.0f
@@ -33,9 +34,22 @@ class OverlayView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
+    private val facePaint = Paint().apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 5f
+        isAntiAlias = true
+    }
+
     private val textPaint = Paint().apply {
         color = Color.WHITE
         textSize = 32f
+        isAntiAlias = true
+        setShadowLayer(4f, 2f, 2f, Color.BLACK)
+    }
+
+    private val faceTextPaint = Paint().apply {
+        color = Color.parseColor("#00FFFF")
+        textSize = 28f
         isAntiAlias = true
         setShadowLayer(4f, 2f, 2f, Color.BLACK)
     }
@@ -58,9 +72,14 @@ class OverlayView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    fun updateResults(newDetections: List<Detection>, event: HazardEvent) {
+    fun updateResults(
+        newDetections: List<Detection>,
+        event: HazardEvent,
+        faces: List<com.blindcap.app.ai.RecognizedFace> = emptyList()
+    ) {
         this.detections = newDetections
         this.hazardEvent = event
+        this.recognizedFaces = faces
         postInvalidate()
     }
 
@@ -96,11 +115,38 @@ class OverlayView @JvmOverloads constructor(
             canvas.drawText(labelText, left + 4f, max(top - 10f, 35f), textPaint)
         }
 
-        // 3. Draw Performance Diagnostic HUD (Top Left, below Top Bar)
+        // 3. Draw Face Identification Overlays
+        for (face in recognizedFaces) {
+            val left = face.bbox.left * w
+            val top = face.bbox.top * h
+            val right = face.bbox.right * w
+            val bottom = face.bbox.bottom * h
+
+            if (face.isKnown) {
+                facePaint.color = Color.parseColor("#00FFFF") // Cyan for known contact
+                faceTextPaint.color = Color.parseColor("#00FFFF")
+            } else {
+                facePaint.color = Color.parseColor("#FFD700") // Gold/Yellow for unknown face
+                faceTextPaint.color = Color.parseColor("#FFD700")
+            }
+
+            canvas.drawRect(left, top, right, bottom, facePaint)
+
+            val faceLabel = if (face.isKnown) {
+                "👤 ${face.name?.uppercase()}"
+            } else if (face.isFacingUser) {
+                "LOOKING AT YOU"
+            } else {
+                "FACE"
+            }
+            canvas.drawText(faceLabel, left + 4f, max(top - 8f, 30f), faceTextPaint)
+        }
+
+        // 4. Draw Performance Diagnostic HUD (Top Left, below Top Bar)
         val hudWidth = 420f
         val hudHeight = 280f
         val startX = 20f
-        val startY = 140f
+        val startY = 160f
 
         canvas.drawRoundRect(startX, startY, startX + hudWidth, startY + hudHeight, 16f, 16f, hudBgPaint)
 
@@ -117,7 +163,8 @@ class OverlayView @JvmOverloads constructor(
         yPos += lineGap
         canvas.drawText("Backend: $activeDevice", startX + 16f, yPos, smallTextPaint)
         yPos += lineGap
-        canvas.drawText("Visible Objects: ${detections.size} | TTS: $ttsStatus", startX + 16f, yPos, smallTextPaint)
+        val faceCountStr = if (recognizedFaces.isNotEmpty()) " | Faces: ${recognizedFaces.size}" else ""
+        canvas.drawText("Objects: ${detections.size}$faceCountStr | TTS: $ttsStatus", startX + 16f, yPos, smallTextPaint)
         yPos += lineGap
 
         val statusText = errorMessage ?: (hazardEvent?.warningText ?: "Scene stable (silent)")
