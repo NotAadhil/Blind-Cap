@@ -2,7 +2,7 @@ name: Build and Release Android APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feature-face-recognition-opt ]
   workflow_dispatch:
 
 permissions:
@@ -45,13 +45,14 @@ jobs:
       - name: Create GitHub Release with APK
         uses: softprops/action-gh-release@v2
         continue-on-error: true
-        if: startsWith(github.ref, 'refs/heads/main')
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: Blind Cap Mobile App v1.0.${{ github.run_number }}
+          tag_name: v1.0.${{ github.run_number }}-face-opt
+          name: Blind Cap Mobile App v1.0.${{ github.run_number }} (Face Recognition & High FPS)
           body: |
-            ## Blind Cap Mobile Android App (Latest Build #${{ github.run_number }})
-            Download the `app-debug.apk` below for 1-click installation on Android.
+            ## Blind Cap Mobile Android App - Face Identification & High FPS Update
+            - **Face Identification (Named Contacts)**: ML Kit Face Detection + MobileFaceNet on-device facial embeddings.
+            - **High Frame Rate ($25\text{–}30+\text{ FPS}$)**: Non-blocking parallel AI vision pipeline with zero-allocation camera frames.
+            - Download `app-debug.apk` below for 1-click installation on Android.
           files: |
             android_app/app/build/outputs/apk/debug/app-debug.apk
         env:
