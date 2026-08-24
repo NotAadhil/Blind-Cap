@@ -454,14 +454,21 @@ class MainActivity : AppCompatActivity() {
                 val name = input.text.toString().trim()
                 if (name.isNotEmpty()) {
                     val frameToEnroll = latestBitmap ?: bitmap
-                    val result = faceRecognitionManager.registerFaceFromBitmap(name, frameToEnroll)
-                    if (result.isSuccess) {
-                        Toast.makeText(this, "Enrolled: $name", Toast.LENGTH_LONG).show()
-                        ttsManager.speak("Face registered for $name.", priority = 60, severity = "INFO")
-                    } else {
-                        val err = result.exceptionOrNull()?.message ?: "Could not detect face"
-                        Toast.makeText(this, "Enrollment failed: $err", Toast.LENGTH_LONG).show()
-                        ttsManager.speak("Could not find face. Please ensure good lighting and try again.", priority = 60, severity = "INFO")
+                    Toast.makeText(this, "Scanning and registering face for $name...", Toast.LENGTH_SHORT).show()
+
+                    // Execute ML Kit detection & embedding extraction on background worker thread
+                    lifecycleScope.launch(Dispatchers.Default) {
+                        val result = faceRecognitionManager.registerFaceFromBitmap(name, frameToEnroll)
+                        withContext(Dispatchers.Main) {
+                            if (result.isSuccess) {
+                                Toast.makeText(this@MainActivity, "Enrolled: $name successfully!", Toast.LENGTH_LONG).show()
+                                ttsManager.speak("Face registered for $name.", priority = 60, severity = "INFO")
+                            } else {
+                                val err = result.exceptionOrNull()?.message ?: "Could not detect face"
+                                Toast.makeText(this@MainActivity, "Enrollment failed: $err", Toast.LENGTH_LONG).show()
+                                ttsManager.speak("Could not find face. Please ensure good lighting and try again.", priority = 60, severity = "INFO")
+                            }
+                        }
                     }
                 }
             }
