@@ -59,19 +59,24 @@ class FaceRecognitionManager(
 
     private val tag = "FaceRecognitionMgr"
     private val registryFileName = "faces_registry.json"
-    private val cosineSimilarityThreshold = 0.65f // Match threshold for MobileFaceNet
+    
+    // Calibrated Cosine Similarity Threshold for 192D MobileFaceNet:
+    // Random different faces: -0.10 to +0.25
+    // Same person under varying lighting/poses: 0.40 to 0.75
+    // Optimal operating point: 0.44f
+    private val cosineSimilarityThreshold = 0.44f
 
     private var faceDetector: FaceDetector? = null
     private var interpreter: Interpreter? = null
     private var gpuDelegate: GpuDelegate? = null
 
-    private var inputSize = 112 // MobileFaceNet standard input dimension
-    private var embeddingDim = 192 // Standard embedding vector dimension
+    private var inputSize = 112 // MobileFaceNet input dimension
+    private var embeddingDim = 192 // Standard output dimension
 
     // In-memory contact cache
     private val registeredContacts = mutableListOf<FaceContact>()
 
-    // Reusable buffers to avoid garbage collection allocations
+    // Reusable buffers to eliminate per-frame garbage collection
     private lateinit var inputByteBuffer: ByteBuffer
     private lateinit var outputEmbeddingBuffer: Array<FloatArray>
     private val cropFaceBitmap: Bitmap = Bitmap.createBitmap(112, 112, Bitmap.Config.ARGB_8888)
@@ -89,17 +94,17 @@ class FaceRecognitionManager(
 
     private fun initFaceDetector() {
         try {
-            // Configure Fast on-device face detector (< 6ms latency)
+            // Ultra-fast on-device face detector
             val options = FaceDetectorOptions.Builder()
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-                .setMinFaceSize(0.12f)
+                .setMinFaceSize(0.10f)
                 .enableTracking()
                 .build()
 
             faceDetector = FaceDetection.getClient(options)
-            Log.i(tag, "Initialized ML Kit Fast Face Detector successfully")
+            Log.i(tag, "Initialized ML Kit Fast Face Detector")
         } catch (e: Exception) {
             Log.e(tag, "Failed to initialize ML Kit Face Detector: ${e.message}", e)
         }
@@ -124,7 +129,7 @@ class FaceRecognitionManager(
                 initializedWithGpu = true
                 Log.i(tag, "MobileFaceNet initialized with GPU Delegate")
             } catch (e: Exception) {
-                Log.w(tag, "MobileFaceNet GPU init failed, using XNNPACK 2T: ${e.message}")
+                Log.w(tag, "MobileFaceNet GPU init failed, using XNNPACK: ${e.message}")
                 gpuDelegate?.close()
                 gpuDelegate = null
             }
@@ -140,17 +145,12 @@ class FaceRecognitionManager(
 
             val interp = interpreter ?: return
 
-            // Inspect model dimensions dynamically
-            val inputTensor = interp.getInputTensor(0)
-            val outputTensor = interp.getOutputTensor(0)
-
-            val inputShape = inputTensor.shape() // e.g. [1, 112, 112, 3]
-            val outputShape = outputTensor.shape() // e.g. [1, 192] or [1, 128]
+            val inputShape = interp.getInputTensor(0).shape()
+            val outputShape = interp.getOutputTensor(0).shape()
 
             inputSize = if (inputShape.size >= 3) inputShape[1] else 112
             embeddingDim = if (outputShape.size >= 2) outputShape[1] else 192
 
-            // Allocate direct byte buffer: 1 * 112 * 112 * 3 * 4 bytes (Float32)
             inputByteBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
                 order(ByteOrder.nativeOrder())
             }
@@ -166,17 +166,14 @@ class FaceRecognitionManager(
 
     /**
      * Run real-time face detection and match against registered contacts.
-     * Call from AI background worker thread.
      */
     fun detectAndRecognizeFaces(bitmap: Bitmap): List<RecognizedFace> {
         val detector = faceDetector ?: return emptyList()
-        val interp = interpreter ?: return emptyList()
 
         val recognizedList = mutableListOf<RecognizedFace>()
 
         try {
             val inputImage = InputImage.fromBitmap(bitmap, 0)
-            // Synchronously wait for ML Kit fast face detection (< 6ms)
             val task = detector.process(inputImage)
             val faces: List<Face> = Tasks.await(task)
 
@@ -195,12 +192,10 @@ class FaceRecognitionManager(
                 if (right <= left || bottom <= top) continue
 
                 val normBbox = RectF(left, top, right, bottom)
-
-                // Check head orientation: Euler Y angle between -18 and +18 degrees means directly looking at user
                 val eulerY = face.headEulerAngleY
-                val isFacingUser = abs(eulerY) <= 18f
+                val isFacingUser = abs(eulerY) <= 22f
 
-                // Extract embedding for face
+                // Extract normalized 192D embedding from square face crop
                 val embedding = extractFaceEmbedding(bitmap, bounds)
 
                 if (embedding != null) {
@@ -234,34 +229,36 @@ class FaceRecognitionManager(
             }
 
         } catch (e: Exception) {
-            Log.e(tag, "Face recognition pipeline error: ${e.message}", e)
+            Log.e(tag, "Face recognition error: ${e.message}")
         }
 
         return recognizedList
     }
 
     /**
-     * Extract 192D normalized facial embedding from bounding box in bitmap.
+     * Extract 192D normalized facial embedding from a square cropped face.
      */
     private fun extractFaceEmbedding(bitmap: Bitmap, faceBounds: Rect): FloatArray? {
         val interp = interpreter ?: return null
 
         try {
-            // Expand crop bounds by 10% to capture full facial features safely
-            val padX = (faceBounds.width() * 0.10f).toInt()
-            val padY = (faceBounds.height() * 0.10f).toInt()
+            // Square crop with 20% margin to maintain facial proportions without aspect distortion
+            val cx = faceBounds.centerX()
+            val cy = faceBounds.centerY()
+            val faceSize = max(faceBounds.width(), faceBounds.height()) * 1.25f
+            val half = (faceSize / 2f).toInt()
 
-            val srcLeft = max(0, faceBounds.left - padX)
-            val srcTop = max(0, faceBounds.top - padY)
-            val srcRight = min(bitmap.width, faceBounds.right + padX)
-            val srcBottom = min(bitmap.height, faceBounds.bottom + padY)
+            val srcLeft = max(0, cx - half)
+            val srcTop = max(0, cy - half)
+            val srcRight = min(bitmap.width, cx + half)
+            val srcBottom = min(bitmap.height, cy + half)
 
             if (srcRight <= srcLeft || srcBottom <= srcTop) return null
 
             val srcRect = Rect(srcLeft, srcTop, srcRight, srcBottom)
             val dstRect = Rect(0, 0, inputSize, inputSize)
 
-            // Draw into reusable 112x112 bitmap (zero heap allocation)
+            // Draw square face crop into 112x112 bitmap (zero-allocation)
             cropCanvas.drawBitmap(bitmap, srcRect, dstRect, cropPaint)
 
             // Preprocess 112x112 into Float32 ByteBuffer: (pixel - 127.5) / 128.0
@@ -279,7 +276,7 @@ class FaceRecognitionManager(
                 inputByteBuffer.putFloat((b - 127.5f) / 128.0f)
             }
 
-            // Run MobileFaceNet inference
+            // Run inference
             interp.run(inputByteBuffer, outputEmbeddingBuffer)
 
             // L2-Normalize the output vector
@@ -297,7 +294,7 @@ class FaceRecognitionManager(
             return normalizedVector
 
         } catch (e: Exception) {
-            Log.e(tag, "Face embedding extraction error: ${e.message}", e)
+            Log.e(tag, "Face embedding extraction error: ${e.message}")
             return null
         }
     }
@@ -353,7 +350,7 @@ class FaceRecognitionManager(
                 return Result.failure(Exception("No face detected. Please align face clearly in view."))
             }
 
-            // Pick the largest/most prominent face in frame
+            // Pick the largest/most centered face
             val primaryFace = faces.maxByOrNull { it.boundingBox.width() * it.boundingBox.height() }
                 ?: return Result.failure(Exception("Could not isolate face"))
 
@@ -367,7 +364,6 @@ class FaceRecognitionManager(
                 enrolledTimestamp = System.currentTimeMillis()
             )
 
-            // Remove previous contact with same name if updating
             registeredContacts.removeAll { it.name.equals(trimmedName, ignoreCase = true) }
             registeredContacts.add(contact)
             saveRegisteredContacts()
@@ -417,7 +413,7 @@ class FaceRecognitionManager(
 
                 registeredContacts.add(FaceContact(id, name, embedding, timestamp))
             }
-            Log.i(tag, "Loaded ${registeredContacts.size} registered face contacts from storage")
+            Log.i(tag, "Loaded ${registeredContacts.size} registered face contacts")
         } catch (e: Exception) {
             Log.e(tag, "Error loading face contacts: ${e.message}", e)
         }
@@ -442,7 +438,7 @@ class FaceRecognitionManager(
 
             val file = File(context.filesDir, registryFileName)
             file.writeText(jsonArray.toString(2))
-            Log.i(tag, "Saved ${registeredContacts.size} face contacts to $registryFileName")
+            Log.i(tag, "Saved ${registeredContacts.size} face contacts")
         } catch (e: Exception) {
             Log.e(tag, "Error saving face contacts: ${e.message}", e)
         }

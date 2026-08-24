@@ -68,6 +68,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
+    private lateinit var faceExecutor: ExecutorService
     private lateinit var prefs: SharedPreferences
 
     private lateinit var depthEstimator: DepthEstimator
@@ -86,6 +87,11 @@ class MainActivity : AppCompatActivity() {
     private val isAiRunning = AtomicBoolean(true)
     private var aiWorkerThread: Thread? = null
 
+    // Asynchronous Face Recognition State (Runs parallel to YOLO, never blocks inference)
+    private val isFaceScanning = AtomicBoolean(false)
+    private val activeRecognizedFaces = AtomicReference<List<RecognizedFace>>(emptyList())
+    private var lastFaceScanTime = 0L
+
     // Zero-allocation reusable Bitmaps
     private var reusableRotatedBitmap: Bitmap? = null
     private var reusableCanvas: Canvas? = null
@@ -94,10 +100,6 @@ class MainActivity : AppCompatActivity() {
     // OCR Request State & Debounce Guard
     private val isOcrProcessing = AtomicBoolean(false)
     private var lastOcrRequestTime = 0L
-
-    // Face Scan Periodic Counter
-    private var faceScanCounter = 0
-    private var latestRecognizedFaces: List<RecognizedFace> = emptyList()
 
     // FPS Measurement Instrumentation
     private var cameraFrameCount = 0
@@ -121,6 +123,7 @@ class MainActivity : AppCompatActivity() {
 
         prefs = getSharedPreferences(prefsName, Context.MODE_PRIVATE)
         cameraExecutor = Executors.newSingleThreadExecutor()
+        faceExecutor = Executors.newSingleThreadExecutor()
 
         depthEstimator = DepthEstimator()
         detector = TfliteYoloDetector(this, depthEstimator)
@@ -135,7 +138,9 @@ class MainActivity : AppCompatActivity() {
                     runOnUiThread {
                         binding.esp32StreamView.setImageBitmap(bitmap)
                     }
-                    latestFrameRef.set(bitmap)
+                    if (latestFrameRef.get() == null) {
+                        latestFrameRef.set(bitmap)
+                    }
                 }
             },
             onStatusChanged = { status ->
@@ -176,7 +181,7 @@ class MainActivity : AppCompatActivity() {
                     measureAiFps()
                 } else {
                     try {
-                        Thread.sleep(3) // Tight yield for responsive frame processing
+                        Thread.sleep(2) // Ultra-responsive frame consumption
                     } catch (_: InterruptedException) {
                         break
                     }
@@ -192,25 +197,34 @@ class MainActivity : AppCompatActivity() {
     private fun processAiFrame(bitmap: Bitmap) {
         latestBitmap = bitmap
 
-        // 1. Hardware Object Detection (YOLO26n / YOLOv8)
+        // 1. Hardware Object Detection (YOLO26n / YOLOv8 - runs at full speed without waiting)
         val detections = detector.detect(bitmap)
         currentDetections = detections
 
-        // 2. Real-Time Face Recognition (Identifies saved contacts by name)
-        // Run face detection if any person is in frame, or periodically every 3 frames
+        // 2. Asynchronous Face Recognition Dispatch (Parallel non-blocking worker)
+        val now = SystemClock.elapsedRealtime()
         val hasPerson = detections.any { it.className.equals("person", ignoreCase = true) }
-        val shouldScanFaces = hasPerson || (faceScanCounter % 3 == 0)
-        faceScanCounter++
 
-        val faces = if (shouldScanFaces) {
-            val detectedFaces = faceRecognitionManager.detectAndRecognizeFaces(bitmap)
-            latestRecognizedFaces = detectedFaces
-            detectedFaces
-        } else {
-            latestRecognizedFaces
+        if ((hasPerson || (now - lastFaceScanTime >= 400L)) && !isFaceScanning.get()) {
+            lastFaceScanTime = now
+            if (isFaceScanning.compareAndSet(false, true)) {
+                faceExecutor.execute {
+                    try {
+                        val faces = faceRecognitionManager.detectAndRecognizeFaces(bitmap)
+                        activeRecognizedFaces.set(faces)
+                    } catch (e: Exception) {
+                        Log.e(tag, "Face scan error: ${e.message}")
+                    } finally {
+                        isFaceScanning.set(false)
+                    }
+                }
+            }
         }
 
-        // 3. Decision Engine with Scale-Invariant Tracking & Camera Motion Compensation
+        // Get latest identified faces instantly (0ms lock-free read)
+        val faces = activeRecognizedFaces.get()
+
+        // 3. Decision Engine with Scale-Invariant Tracking & Face Integration
         val event = decisionEngine.evaluate(detections, faces)
 
         // 4. Dispatch Speech if warranted
@@ -222,7 +236,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // 5. Update UI Overlay with Performance Breakdown
+        // 5. Update UI Overlay
         val sourceLabel = if (currentSource == VideoInputSource.PHONE_CAMERA) "Phone" else "ESP32"
         val ttsStatus = if (ttsManager.isSpeaking) "SPEAKING" else "SILENT"
 
@@ -331,7 +345,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("ESP32-CAM Stream URL")
-            .setMessage("Enter the MJPEG stream URL of your ESP32-CAM (e.g. http://192.168.4.1:81/stream or http://192.168.1.50/stream):")
+            .setMessage("Enter the MJPEG stream URL of your ESP32-CAM (e.g. http://192.168.4.1:81/stream):")
             .setView(input)
             .setPositiveButton("Save & Connect") { _, _ ->
                 val newUrl = input.text.toString().trim()
@@ -347,9 +361,6 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /**
-     * Dialog to manage and register Face Identification Contacts.
-     */
     private fun showFaceContactsDialog() {
         val contacts = faceRecognitionManager.getRegisteredContacts()
 
@@ -437,7 +448,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Enroll Face")
-            .setMessage("Point camera at your friend or family member's face and enter their name:")
+            .setMessage("Point camera directly at your friend or family member's face and enter their name:")
             .setView(input)
             .setPositiveButton("Save Contact") { _, _ ->
                 val name = input.text.toString().trim()
@@ -450,7 +461,7 @@ class MainActivity : AppCompatActivity() {
                     } else {
                         val err = result.exceptionOrNull()?.message ?: "Could not detect face"
                         Toast.makeText(this, "Enrollment failed: $err", Toast.LENGTH_LONG).show()
-                        ttsManager.speak("Could not find face. Please try again.", priority = 60, severity = "INFO")
+                        ttsManager.speak("Could not find face. Please ensure good lighting and try again.", priority = 60, severity = "INFO")
                     }
                 }
             }
@@ -503,6 +514,7 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         isAiRunning.set(false)
         aiWorkerThread?.interrupt()
+        faceExecutor.shutdown()
         mjpegStreamReader.stop()
         cameraExecutor.shutdown()
         detector.close()
@@ -524,7 +536,7 @@ class MainActivity : AppCompatActivity() {
                 it.setSurfaceProvider(binding.viewFinder.surfaceProvider)
             }
 
-            // High-Performance 480x480 analysis resolution (minimizes memory & GC load)
+            // High-Performance 480x480 analysis resolution
             val imageAnalysis = ImageAnalysis.Builder()
                 .setTargetResolution(android.util.Size(480, 480))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -556,10 +568,15 @@ class MainActivity : AppCompatActivity() {
 
         measureCameraFps()
 
+        // Critical optimization: If AI worker already has a frame pending, DO NOT do any bitmap conversion!
+        if (latestFrameRef.get() != null) {
+            imageProxy.close()
+            return
+        }
+
         try {
             val bitmap = imageProxyToBitmap(imageProxy)
             if (bitmap != null) {
-                // Non-blocking atomic handoff for AI worker
                 latestFrameRef.set(bitmap)
             }
         } catch (e: Exception) {
