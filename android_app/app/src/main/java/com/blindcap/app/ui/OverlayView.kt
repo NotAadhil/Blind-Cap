@@ -5,11 +5,12 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
 import com.blindcap.app.ai.Detection
 import com.blindcap.app.ai.DetectionTimings
-import com.blindcap.app.ai.RecognizedFace
+import com.blindcap.app.ai.FaceObservation
 import com.blindcap.app.engine.HazardEvent
 import kotlin.math.max
 
@@ -21,13 +22,13 @@ class OverlayView @JvmOverloads constructor(
 
     private val boxPaint = Paint().apply {
         style = Paint.Style.STROKE
-        strokeWidth = 5f
+        strokeWidth = 4f
         isAntiAlias = true
     }
 
     private val facePaint = Paint().apply {
         style = Paint.Style.STROKE
-        strokeWidth = 5f
+        strokeWidth = 6f
         isAntiAlias = true
     }
 
@@ -46,7 +47,15 @@ class OverlayView @JvmOverloads constructor(
     }
 
     private val faceTextPaint = Paint().apply {
+        color = Color.parseColor("#00FFFF")
         textSize = 26f
+        isAntiAlias = true
+        setShadowLayer(3f, 1f, 1f, Color.BLACK)
+    }
+
+    private val goldTextPaint = Paint().apply {
+        color = Color.parseColor("#FFD700")
+        textSize = 24f
         isAntiAlias = true
         setShadowLayer(3f, 1f, 1f, Color.BLACK)
     }
@@ -70,22 +79,20 @@ class OverlayView @JvmOverloads constructor(
     var errorMessage: String? = null
     var faceDiagnostic: String = "Ready"
     var faceScanMs: Float = 0f
-
-    // Set of lowercase enrolled contact names (e.g. "aadhil", "mom", "doctor")
     var registeredContactNames: Set<String> = emptySet()
 
     private var detections: List<Detection> = emptyList()
     private var hazardEvent: HazardEvent? = null
-    private var recognizedFaces: List<RecognizedFace> = emptyList()
+    private var faceObservations: List<FaceObservation> = emptyList()
 
     fun updateResults(
         newDetections: List<Detection>,
         newEvent: HazardEvent,
-        newFaces: List<RecognizedFace> = emptyList()
+        newObservations: List<FaceObservation> = emptyList()
     ) {
         detections = newDetections
         hazardEvent = newEvent
-        recognizedFaces = newFaces
+        faceObservations = newObservations
         invalidate()
     }
 
@@ -97,23 +104,21 @@ class OverlayView @JvmOverloads constructor(
 
         if (w <= 0 || h <= 0) return
 
+        val now = SystemClock.elapsedRealtime()
+
         // 1. Draw Walking Corridor Boundaries (Center 40% of FOV: 0.30 to 0.70)
         canvas.drawLine(w * 0.30f, 0f, w * 0.30f, h, corridorPaint)
         canvas.drawLine(w * 0.70f, 0f, w * 0.70f, h, corridorPaint)
 
-        // 2. Draw Real-Time Dynamic Object & Identified Person Bounding Boxes
+        // 2. Draw Object Bounding Boxes (YOLO Detections)
         for (det in detections) {
             val left = det.bbox.left * w
             val top = det.bbox.top * h
             val right = det.bbox.right * w
             val bottom = det.bbox.bottom * h
 
-            // A detection is ONLY treated as a recognized contact if its className matches an enrolled face contact name
-            val isRecognizedContact = registeredContactNames.isNotEmpty() && registeredContactNames.contains(det.className.lowercase())
-
             val isObstruction = hazardEvent?.allHazards?.any { it.className.equals(det.className, true) } == true
             boxPaint.color = when {
-                isRecognizedContact -> Color.parseColor("#00FFFF") // Vibrant Cyan strictly for verified person contacts
                 isObstruction && det.areaRatio >= 0.15f -> Color.RED
                 isObstruction -> Color.parseColor("#FFA500") // Orange
                 det.region == "center" -> Color.YELLOW
@@ -123,29 +128,37 @@ class OverlayView @JvmOverloads constructor(
             canvas.drawRect(left, top, right, bottom, boxPaint)
 
             val distStr = if (det.estimatedDistanceM > 0) " (%.1fm)".format(det.estimatedDistanceM) else ""
-            val prefix = if (isRecognizedContact) "👤 " else ""
-            val label = "$prefix${det.className.uppercase()} %.0f%%%s".format(det.confidence * 100, distStr)
-
-            if (isRecognizedContact) {
-                faceTextPaint.color = Color.parseColor("#00FFFF")
-                canvas.drawText(label, left + 4f, max(top - 8f, 25f), faceTextPaint)
-            } else {
-                canvas.drawText(label, left + 4f, max(top - 8f, 25f), textPaint)
-            }
+            val label = "${det.className.uppercase()} %.0f%%%s".format(det.confidence * 100, distStr)
+            canvas.drawText(label, left + 4f, max(top - 8f, 25f), textPaint)
         }
 
-        // 3. Draw Real-Time Gaze Indicator (Only when an unknown face is actively looking at user)
-        for (face in recognizedFaces) {
-            if (face.isFacingUser && !face.isKnown) {
-                val left = face.bbox.left * w
-                val top = face.bbox.top * h
-                val right = face.bbox.right * w
-                val bottom = face.bbox.bottom * h
+        // 3. Draw Dynamic Real-Time Face Observations (Freshness <= 300ms)
+        val validObservations = faceObservations.filter { !it.isStale(now, maxAgeMs = 300L) }
+        for (obs in validObservations) {
+            val left = (obs.bbox.left * w).coerceIn(0f, w)
+            val top = (obs.bbox.top * h).coerceIn(0f, h)
+            val right = (obs.bbox.right * w).coerceIn(0f, w)
+            val bottom = (obs.bbox.bottom * h).coerceIn(0f, h)
 
-                facePaint.color = Color.parseColor("#FFD700") // Gold
-                faceTextPaint.color = Color.parseColor("#FFD700")
+            if (right <= left || bottom <= top) continue
+
+            if (obs.isKnown && obs.identity != null) {
+                // Known Contact: Vibrant Cyan Box with Contact Name
+                facePaint.color = Color.parseColor("#00FFFF")
                 canvas.drawRect(left, top, right, bottom, facePaint)
-                canvas.drawText("LOOKING AT YOU", left + 4f, max(top - 8f, 30f), faceTextPaint)
+
+                val label = "👤 ${obs.identity.uppercase()}"
+                canvas.drawText(label, left + 4f, max(top - 8f, 25f), faceTextPaint)
+            } else if (obs.isFacingUser) {
+                // Unknown Face Looking Directly at User: Gold Box
+                facePaint.color = Color.parseColor("#FFD700")
+                canvas.drawRect(left, top, right, bottom, facePaint)
+                canvas.drawText("LOOKING AT YOU", left + 4f, max(top - 8f, 25f), goldTextPaint)
+            } else {
+                // General Face Detection: Subtle White/Cyan Box
+                facePaint.color = Color.argb(180, 0, 255, 255)
+                canvas.drawRect(left, top, right, bottom, facePaint)
+                canvas.drawText("FACE", left + 4f, max(top - 8f, 25f), smallTextPaint)
             }
         }
 
@@ -170,7 +183,7 @@ class OverlayView @JvmOverloads constructor(
         yPos += lineGap
         canvas.drawText("P95 Latency: %.1fms  |  Backend: %s".format(timings.p95Ms, activeDevice), startX + 16f, yPos, smallTextPaint)
         yPos += lineGap
-        val faceCountStr = if (recognizedFaces.isNotEmpty()) " | Faces: ${recognizedFaces.size}" else ""
+        val faceCountStr = if (validObservations.isNotEmpty()) " | Faces: ${validObservations.size}" else ""
         canvas.drawText("Objects: ${detections.size}$faceCountStr | TTS: $ttsStatus", startX + 16f, yPos, smallTextPaint)
         yPos += lineGap
 

@@ -208,19 +208,19 @@ class MainActivity : AppCompatActivity() {
         val hasUnannouncedPerson = hasPersons && (
             decisionEngine.trackedObjects.isEmpty() ||
             decisionEngine.trackedObjects.values.any {
-                it.className.equals("person", ignoreCase = true) &&
-                it.recognitionState != RecognitionState.ANNOUNCED &&
-                it.recognitionState != RecognitionState.TRACKING
+                (it.className.equals("person", ignoreCase = true) || it.faceName != null) &&
+                it.framesMissing == 0 &&
+                (it.recognitionState != RecognitionState.ANNOUNCED || now - it.lastFaceSeenTimeMs > 3000L)
             }
         )
 
         if ((now - lastFaceScanTime >= 220L) && hasUnannouncedPerson && !isFaceScanning.get()) {
             if (isFaceScanning.compareAndSet(false, true)) {
                 lastFaceScanTime = now
-                // Pass immutable frame snapshot and detections to background face worker
+                // Pass immutable frame snapshot to background face worker
                 faceExecutor.execute {
                     try {
-                        val faces = faceRecognitionManager.detectAndRecognizeFaces(bitmap, detections)
+                        val faces = faceRecognitionManager.detectAndRecognizeFaces(bitmap)
                         activeRecognizedFaces.set(faces)
                     } catch (e: Exception) {
                         Log.e(tag, "Face scan error: ${e.message}", e)
@@ -238,7 +238,7 @@ class MainActivity : AppCompatActivity() {
             emptyList()
         }
 
-        // 3. Decision Engine with Scale-Invariant Tracking & Face Integration
+        // 3. Decision Engine with Scale-Invariant Tracking & Dynamic Live Face Observations
         val event = decisionEngine.evaluate(detections, faces)
 
         // 4. Dispatch Speech if warranted
@@ -250,12 +250,13 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
-        // 5. Update UI Overlay with Telemetry
+        // 5. Update UI Overlay with Telemetry & Dynamic Face Observations
         val sourceLabel = if (currentSource == VideoInputSource.PHONE_CAMERA) "Phone" else "ESP32"
         val ttsStatus = if (ttsManager.isSpeaking) "SPEAKING" else "SILENT"
         val faceDiag = faceRecognitionManager.lastDiagnostic
         val faceScanTimeMs = faceRecognitionManager.lastFaceScanMs
         val registeredNames = faceRecognitionManager.getRegisteredContacts().map { it.name.lowercase() }.toSet()
+        val liveObservations = event.faceObservations
 
         runOnUiThread {
             binding.overlayView.cameraFps = currentCameraFps
@@ -267,7 +268,7 @@ class MainActivity : AppCompatActivity() {
             binding.overlayView.faceDiagnostic = faceDiag
             binding.overlayView.faceScanMs = faceScanTimeMs
             binding.overlayView.registeredContactNames = registeredNames
-            binding.overlayView.updateResults(detections, event, faces)
+            binding.overlayView.updateResults(detections, event, liveObservations)
         }
     }
 
@@ -481,6 +482,8 @@ class MainActivity : AppCompatActivity() {
                         val result = faceRecognitionManager.registerFaceFromBitmap(name, frameToEnroll)
                         runOnUiThread {
                             if (result.isSuccess) {
+                                activeRecognizedFaces.set(emptyList())
+                                decisionEngine.clearAllTracks()
                                 Toast.makeText(this@MainActivity, "Enrolled: $name successfully!", Toast.LENGTH_LONG).show()
                                 ttsManager.speak("Face registered for $name.", priority = 60, severity = "INFO")
                             } else {

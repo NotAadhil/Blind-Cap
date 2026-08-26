@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
+import android.os.SystemClock
 import android.util.Log
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.common.InputImage
@@ -50,7 +51,8 @@ data class RecognizedFace(
     val bbox: RectF, // Normalized [0..1]
     val isFacingUser: Boolean,
     val headEulerY: Float,
-    val trackingId: Int?
+    val trackingId: Int?,
+    val timestamp: Long = SystemClock.elapsedRealtime()
 )
 
 class FaceRecognitionManager(
@@ -62,7 +64,6 @@ class FaceRecognitionManager(
     private val registryFileName = "faces_registry.json"
     
     // Calibrated strict Cosine Similarity Threshold for 192D MobileFaceNet: 0.70f
-    // High-confidence threshold prevents any false matches against random textures/fabrics
     private val cosineSimilarityThreshold = 0.70f
 
     private var faceDetector: FaceDetector? = null
@@ -109,7 +110,7 @@ class FaceRecognitionManager(
                 .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
                 .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
                 .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
-                .setMinFaceSize(0.15f) // Minimum 15% of frame to avoid tiny background noise
+                .setMinFaceSize(0.15f)
                 .enableTracking()
                 .build()
 
@@ -152,14 +153,10 @@ class FaceRecognitionManager(
 
     /**
      * Detect and identify faces asynchronously.
-     * ONLY extracts embeddings if ML Kit explicitly detects a genuine human face.
-     * Completely eliminates false positive identification on inanimate objects / fabrics.
+     * ONLY extracts embeddings when ML Kit explicitly detects a human face.
      */
-    fun detectAndRecognizeFaces(
-        bitmap: Bitmap,
-        personDetections: List<Detection> = emptyList()
-    ): List<RecognizedFace> {
-        val t0 = System.currentTimeMillis()
+    fun detectAndRecognizeFaces(bitmap: Bitmap): List<RecognizedFace> {
+        val t0 = SystemClock.elapsedRealtime()
         val detector = faceDetector ?: return emptyList()
         val recognizedList = ArrayList<RecognizedFace>(4)
         val bmpW = bitmap.width.toFloat()
@@ -169,6 +166,8 @@ class FaceRecognitionManager(
             val inputImage = InputImage.fromBitmap(bitmap, 0)
             val task = detector.process(inputImage)
             val faces: List<Face> = Tasks.await(task, 400L, TimeUnit.MILLISECONDS)
+
+            val scanTimestamp = SystemClock.elapsedRealtime()
 
             for (face in faces) {
                 val bounds = face.boundingBox
@@ -191,6 +190,7 @@ class FaceRecognitionManager(
                 if (embedding != null) {
                     val match = findBestContactMatch(embedding)
                     if (match != null && match.second >= cosineSimilarityThreshold) {
+                        Log.d(tag, "[FACE_RECOGNIZED] identity=${match.first.name}, similarity=${match.second}, bbox=$normBbox")
                         recognizedList.add(
                             RecognizedFace(
                                 name = match.first.name,
@@ -199,10 +199,12 @@ class FaceRecognitionManager(
                                 bbox = normBbox,
                                 isFacingUser = isFacingUser,
                                 headEulerY = eulerY,
-                                trackingId = face.trackingId
+                                trackingId = face.trackingId,
+                                timestamp = scanTimestamp
                             )
                         )
                     } else {
+                        Log.d(tag, "[FACE_DETECTED] unknown_face, similarity=${match?.second ?: 0f}, bbox=$normBbox")
                         recognizedList.add(
                             RecognizedFace(
                                 name = null,
@@ -211,7 +213,8 @@ class FaceRecognitionManager(
                                 bbox = normBbox,
                                 isFacingUser = isFacingUser,
                                 headEulerY = eulerY,
-                                trackingId = face.trackingId
+                                trackingId = face.trackingId,
+                                timestamp = scanTimestamp
                             )
                         )
                     }
@@ -221,7 +224,7 @@ class FaceRecognitionManager(
             Log.w(tag, "Face detection scan skipped or timed out: ${e.message}")
         }
 
-        lastFaceScanMs = (System.currentTimeMillis() - t0).toFloat()
+        lastFaceScanMs = (SystemClock.elapsedRealtime() - t0).toFloat()
 
         lastDiagnostic = if (recognizedList.isNotEmpty()) {
             val known = recognizedList.firstOrNull { it.isKnown }
