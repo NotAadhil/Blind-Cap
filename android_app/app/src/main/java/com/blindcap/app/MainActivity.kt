@@ -255,6 +255,7 @@ class MainActivity : AppCompatActivity() {
         val ttsStatus = if (ttsManager.isSpeaking) "SPEAKING" else "SILENT"
         val faceDiag = faceRecognitionManager.lastDiagnostic
         val faceScanTimeMs = faceRecognitionManager.lastFaceScanMs
+        val registeredNames = faceRecognitionManager.getRegisteredContacts().map { it.name.lowercase() }.toSet()
 
         runOnUiThread {
             binding.overlayView.cameraFps = currentCameraFps
@@ -265,6 +266,7 @@ class MainActivity : AppCompatActivity() {
             binding.overlayView.errorMessage = detector.lastError
             binding.overlayView.faceDiagnostic = faceDiag
             binding.overlayView.faceScanMs = faceScanTimeMs
+            binding.overlayView.registeredContactNames = registeredNames
             binding.overlayView.updateResults(detections, event, faces)
         }
     }

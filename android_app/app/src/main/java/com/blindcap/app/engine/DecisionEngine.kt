@@ -140,18 +140,16 @@ class DecisionEngine {
         // Merges multi-zone body boxes, torso vs full body, and overlapping person candidates
         val deduplicatedDetections = deduplicateDetections(filteredDetections)
 
-        // 3. Associate detected faces with person detections
+        // 3. Associate detected faces with person detections (Strictly person bounding boxes only)
         for (det in deduplicatedDetections) {
-            val isPersonLike = det.className.equals("person", ignoreCase = true) || det.className.equals("face", ignoreCase = true)
-            if (isPersonLike) {
+            val isPerson = det.className.equals("person", ignoreCase = true)
+            if (isPerson) {
                 for (face in recognizedFaces) {
                     val fcx = face.bbox.centerX()
                     val fcy = face.bbox.centerY()
-                    val marginX = det.bbox.width() * 0.20f
-                    val marginY = det.bbox.height() * 0.20f
-                    if (fcx >= det.bbox.left - marginX && fcx <= det.bbox.right + marginX &&
-                        fcy >= det.bbox.top - marginY && fcy <= det.bbox.bottom + marginY) {
-                        if (face.isKnown && face.name != null && face.confidence >= 0.44f) {
+                    if (fcx >= det.bbox.left && fcx <= det.bbox.right &&
+                        fcy >= det.bbox.top && fcy <= (det.bbox.top + det.bbox.height() * 0.45f)) {
+                        if (face.isKnown && face.name != null && face.confidence >= 0.70f) {
                             det.className = face.name
                         }
                         break
@@ -216,13 +214,18 @@ class DecisionEngine {
                 track.smoothDistance(det.estimatedDistanceM)
                 track.region = classifyTrackRegion(track.bbox, track.center.first, track.region)
 
-                // Match face recognition state
-                for (face in recognizedFaces) {
-                    val fcx = face.bbox.centerX()
-                    val fcy = face.bbox.centerY()
-                    if (fcx >= track.bbox.left && fcx <= track.bbox.right && fcy >= track.bbox.top && fcy <= track.bbox.bottom) {
-                        track.attachFace(if (face.isKnown) face.name else null, face.confidence, face.isFacingUser)
-                        break
+                // Match face recognition state (Strictly for person tracks)
+                if (track.className.equals("person", ignoreCase = true) || track.faceName != null) {
+                    for (face in recognizedFaces) {
+                        val fcx = face.bbox.centerX()
+                        val fcy = face.bbox.centerY()
+                        if (fcx >= track.bbox.left && fcx <= track.bbox.right &&
+                            fcy >= track.bbox.top && fcy <= (track.bbox.top + track.bbox.height() * 0.45f)) {
+                            if (face.isKnown && face.name != null && face.confidence >= 0.70f) {
+                                track.attachFace(face.name, face.confidence, face.isFacingUser)
+                            }
+                            break
+                        }
                     }
                 }
 
@@ -247,12 +250,17 @@ class DecisionEngine {
                         state = if (isInstantConfirm) TrackState.CONFIRMED else TrackState.CANDIDATE
                     )
 
-                    for (face in recognizedFaces) {
-                        val fcx = face.bbox.centerX()
-                        val fcy = face.bbox.centerY()
-                        if (fcx >= det.bbox.left && fcx <= det.bbox.right && fcy >= det.bbox.top && fcy <= det.bbox.bottom) {
-                            newTrack.attachFace(if (face.isKnown) face.name else null, face.confidence, face.isFacingUser)
-                            break
+                    if (det.className.equals("person", ignoreCase = true)) {
+                        for (face in recognizedFaces) {
+                            val fcx = face.bbox.centerX()
+                            val fcy = face.bbox.centerY()
+                            if (fcx >= det.bbox.left && fcx <= det.bbox.right &&
+                                fcy >= det.bbox.top && fcy <= (det.bbox.top + det.bbox.height() * 0.45f)) {
+                                if (face.isKnown && face.name != null && face.confidence >= 0.70f) {
+                                    newTrack.attachFace(face.name, face.confidence, face.isFacingUser)
+                                }
+                                break
+                            }
                         }
                     }
 

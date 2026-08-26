@@ -71,6 +71,9 @@ class OverlayView @JvmOverloads constructor(
     var faceDiagnostic: String = "Ready"
     var faceScanMs: Float = 0f
 
+    // Set of lowercase enrolled contact names (e.g. "aadhil", "mom", "doctor")
+    var registeredContactNames: Set<String> = emptySet()
+
     private var detections: List<Detection> = emptyList()
     private var hazardEvent: HazardEvent? = null
     private var recognizedFaces: List<RecognizedFace> = emptyList()
@@ -105,17 +108,12 @@ class OverlayView @JvmOverloads constructor(
             val right = det.bbox.right * w
             val bottom = det.bbox.bottom * h
 
-            // If the person is identified with an enrolled name, det.className contains their name
-            val isRecognizedContact = recognizedFaces.any { it.isKnown && it.name.equals(det.className, ignoreCase = true) } ||
-                (!det.className.equals("person", ignoreCase = true) &&
-                 !det.className.equals("chair", ignoreCase = true) &&
-                 !det.className.equals("cell phone", ignoreCase = true) &&
-                 !det.className.equals("bottle", ignoreCase = true) &&
-                 !det.className.equals("car", ignoreCase = true))
+            // A detection is ONLY treated as a recognized contact if its className matches an enrolled face contact name
+            val isRecognizedContact = registeredContactNames.isNotEmpty() && registeredContactNames.contains(det.className.lowercase())
 
             val isObstruction = hazardEvent?.allHazards?.any { it.className.equals(det.className, true) } == true
             boxPaint.color = when {
-                isRecognizedContact -> Color.parseColor("#00FFFF") // Vibrant Cyan for recognized person
+                isRecognizedContact -> Color.parseColor("#00FFFF") // Vibrant Cyan strictly for verified person contacts
                 isObstruction && det.areaRatio >= 0.15f -> Color.RED
                 isObstruction -> Color.parseColor("#FFA500") // Orange
                 det.region == "center" -> Color.YELLOW
@@ -127,7 +125,7 @@ class OverlayView @JvmOverloads constructor(
             val distStr = if (det.estimatedDistanceM > 0) " (%.1fm)".format(det.estimatedDistanceM) else ""
             val prefix = if (isRecognizedContact) "👤 " else ""
             val label = "$prefix${det.className.uppercase()} %.0f%%%s".format(det.confidence * 100, distStr)
-            
+
             if (isRecognizedContact) {
                 faceTextPaint.color = Color.parseColor("#00FFFF")
                 canvas.drawText(label, left + 4f, max(top - 8f, 25f), faceTextPaint)
