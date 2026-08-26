@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.RectF
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
@@ -81,7 +80,6 @@ class OverlayView @JvmOverloads constructor(
     var faceScanMs: Float = 0f
     var registeredContactNames: Set<String> = emptySet()
 
-    private var latestRenderedFrameId: Long = 0L
     private var detections: List<Detection> = emptyList()
     private var hazardEvent: HazardEvent? = null
     private var faceObservations: List<FaceObservation> = emptyList()
@@ -89,16 +87,8 @@ class OverlayView @JvmOverloads constructor(
     fun updateResults(
         newDetections: List<Detection>,
         newEvent: HazardEvent,
-        newObservations: List<FaceObservation> = emptyList(),
-        frameId: Long = 0L
+        newObservations: List<FaceObservation> = emptyList()
     ) {
-        if (frameId > 0L && frameId < latestRenderedFrameId) {
-            return // Drop stale out-of-order asynchronous result
-        }
-        if (frameId > 0L) {
-            latestRenderedFrameId = frameId
-        }
-
         detections = newDetections.toList()
         hazardEvent = newEvent
         faceObservations = newObservations.toList()

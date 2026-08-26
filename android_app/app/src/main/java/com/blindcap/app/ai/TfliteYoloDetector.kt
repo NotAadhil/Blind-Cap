@@ -59,8 +59,7 @@ class TfliteYoloDetector(
         .add(NormalizeOp(0f, 255f))
         .build()
 
-    // Fixed output buffer - reused across every call, never reallocated
-    // Shape: [1, 300, 6] -> [x1, y1, x2, y2, score, class_id]
+    // Fixed output buffer - shape: [1, 300, 6] -> [x1, y1, x2, y2, score, class_id]
     private val outputBuffer: Array<Array<FloatArray>> = Array(1) { Array(300) { FloatArray(6) } }
 
     // Rolling latency history for P50 / P95 calculation (last 60 frames)
@@ -112,13 +111,14 @@ class TfliteYoloDetector(
 
     /**
      * Run detection on the provided bitmap.
-     * Versioned with frameId to prevent asynchronous out-of-order stale application.
+     * Guaranteed clean execution with output buffer memory zeroing.
      */
     @Synchronized
-    fun detect(bitmap: Bitmap, frameId: Long = 0L): List<Detection> {
+    fun detect(bitmap: Bitmap): List<Detection> {
         val interp = interpreter
         if (interp == null) {
             lastError = "Interpreter not initialized"
+            Log.e(tag, "detect called but interpreter is null! error=$lastError")
             return emptyList()
         }
 
@@ -172,8 +172,8 @@ class TfliteYoloDetector(
                 val right = max(0f, min(1f, x2))
                 val bottom= max(0f, min(1f, y2))
 
-                // Skip degenerate or invalid bboxes
-                if (right <= left || bottom <= top || (right - left) < 0.01f || (bottom - top) < 0.01f) continue
+                // Skip degenerate bboxes
+                if (right <= left || bottom <= top) continue
 
                 val bbox = RectF(left, top, right, bottom)
                 val cx = (left + right) * 0.5f
@@ -193,8 +193,7 @@ class TfliteYoloDetector(
                         center = Pair(cx, cy),
                         areaRatio = areaRatio,
                         region = region,
-                        estimatedDistanceM = distanceM,
-                        frameId = frameId
+                        estimatedDistanceM = distanceM
                     )
                 )
             }
@@ -218,7 +217,8 @@ class TfliteYoloDetector(
             )
             lastError = null
 
-            return applyNms(rawDetections)
+            val finalDetections = applyNms(rawDetections)
+            return finalDetections
 
         } catch (e: Exception) {
             lastError = "TFLite inference: ${e.message}"

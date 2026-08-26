@@ -1,4 +1,4 @@
-﻿package com.blindcap.app
+package com.blindcap.app
 
 import android.Manifest
 import android.content.Context
@@ -45,19 +45,12 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 enum class VideoInputSource {
     PHONE_CAMERA,
     ESP32_CAM
 }
-
-data class FramePayload(
-    val frameId: Long,
-    val bitmap: Bitmap,
-    val timestampMs: Long = SystemClock.elapsedRealtime()
-)
 
 class MainActivity : AppCompatActivity() {
 
@@ -85,9 +78,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ttsManager: TtsManager
     private lateinit var mjpegStreamReader: MjpegStreamReader
 
-    // Decoupled Frame Dispatch & Worker Loop
-    private val nextFrameId = AtomicLong(1L)
-    private val latestFrameRef = AtomicReference<FramePayload?>()
+    // Decoupled Frame Transfer
+    private val latestFrameRef = AtomicReference<Bitmap?>()
     private val isAiRunning = AtomicBoolean(false)
     private var aiWorkerThread: Thread? = null
 
@@ -125,7 +117,7 @@ class MainActivity : AppCompatActivity() {
         faceExecutor = Executors.newSingleThreadExecutor()
 
         depthEstimator = DepthEstimator()
-        detector = TfliteYoloDetector(this)
+        detector = TfliteYoloDetector(this, depthEstimator)
         faceRecognitionManager = FaceRecognitionManager(this)
         decisionEngine = DecisionEngine()
         ocrManager = OcrManager()
@@ -137,10 +129,9 @@ class MainActivity : AppCompatActivity() {
                     runOnUiThread {
                         binding.esp32StreamView.setImageBitmap(bitmap)
                     }
-                    val frameId = nextFrameId.incrementAndGet()
-                    val payload = FramePayload(frameId, bitmap, SystemClock.elapsedRealtime())
-                    val old = latestFrameRef.getAndSet(payload)
-                    old?.bitmap?.recycle()
+                    if (latestFrameRef.get() == null) {
+                        latestFrameRef.set(bitmap)
+                    }
                 }
             },
             onStatusChanged = { status ->
@@ -175,9 +166,9 @@ class MainActivity : AppCompatActivity() {
         isAiRunning.set(true)
         aiWorkerThread = Thread({
             while (isAiRunning.get()) {
-                val payload = latestFrameRef.getAndSet(null)
-                if (payload != null) {
-                    processAiFrame(payload)
+                val frame = latestFrameRef.getAndSet(null)
+                if (frame != null) {
+                    processAiFrame(frame)
                     measureAiFps()
                 } else {
                     try {
@@ -187,21 +178,27 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-        }, "Oculus-AI-Worker").apply {
+        }, "BlindCap-AI-Worker").apply {
             priority = Thread.NORM_PRIORITY + 2
             isDaemon = true
             start()
         }
     }
 
-    private fun processAiFrame(payload: FramePayload) {
-        val bitmap = payload.bitmap
-        val frameId = payload.frameId
+    private fun processAiFrame(bitmap: Bitmap) {
         latestBitmap = bitmap
 
-        // 1. Hardware Object Detection (YOLO26n 320x320 - zero-allocation pipeline)
-        val detections = detector.detect(bitmap, frameId)
+        // 1. Hardware Object Detection (YOLO26n 320x320)
+        val detections = detector.detect(bitmap)
         currentDetections = detections
+
+        // Step 3 Diagnostic Logging: Log raw YOLO detections per frame
+        Log.i("YOLO_RAW", "YOLO Frame #$aiFrameCount: ${detections.size} detections")
+        for (det in detections) {
+            Log.i("YOLO_RAW", "  ${det.className} conf=%.2f box=[%.2f, %.2f, %.2f, %.2f] dist=%.1fm".format(
+                det.confidence, det.bbox.left, det.bbox.top, det.bbox.right, det.bbox.bottom, det.estimatedDistanceM
+            ))
+        }
 
         // 2. Asynchronous Face Recognition Dispatch (Throttled to 4.5 FPS + Track-Aware)
         val now = SystemClock.elapsedRealtime()
@@ -274,7 +271,7 @@ class MainActivity : AppCompatActivity() {
             binding.overlayView.faceDiagnostic = faceDiag
             binding.overlayView.faceScanMs = faceScanTimeMs
             binding.overlayView.registeredContactNames = registeredNames
-            binding.overlayView.updateResults(detections, event, liveObservations, frameId)
+            binding.overlayView.updateResults(detections, event, liveObservations)
         }
     }
 
@@ -560,7 +557,7 @@ class MainActivity : AppCompatActivity() {
 
         measureCameraFps()
 
-        // Critical optimization: If AI worker already has a frame pending, DO NOT do any bitmap conversion!
+        // If AI worker is still processing previous frame, skip this frame to prevent buffer lag
         if (latestFrameRef.get() != null) {
             imageProxy.close()
             return
@@ -569,10 +566,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val bitmap = imageProxyToBitmap(imageProxy)
             if (bitmap != null) {
-                val frameId = nextFrameId.incrementAndGet()
-                val payload = FramePayload(frameId, bitmap, SystemClock.elapsedRealtime())
-                val old = latestFrameRef.getAndSet(payload)
-                old?.bitmap?.recycle()
+                latestFrameRef.set(bitmap)
             }
         } catch (e: Exception) {
             Log.e(tag, "Error extracting image frame: ${e.message}")
