@@ -1,6 +1,7 @@
-﻿package com.blindcap.app.ai
+package com.blindcap.app.ai
 
 import android.content.Context
+import android.content.res.AssetFileDescriptor
 import android.graphics.Bitmap
 import android.graphics.RectF
 import android.os.SystemClock
@@ -13,12 +14,22 @@ import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.image.ops.ResizeOp
 import java.io.BufferedReader
+import java.io.FileInputStream
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.channels.FileChannel
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+
+enum class DetectorState {
+    CREATING,
+    LOADING_MODEL,
+    CREATING_RUNTIME,
+    READY,
+    FAILED
+}
 
 data class DetectionTimings(
     val preprocessMs: Float = 0f,
@@ -42,6 +53,9 @@ class TfliteYoloDetector(
     private val labels = mutableListOf<String>()
 
     val inputSize = 320
+
+    var detectorState: DetectorState = DetectorState.CREATING
+        private set
 
     var activeDevice: String = "Initializing..."
         private set
@@ -68,6 +82,8 @@ class TfliteYoloDetector(
     private var latencyCount = 0
 
     init {
+        Log.i(tag, "=== STARTING OBJECT DETECTOR INITIALIZATION ===")
+        detectorState = DetectorState.CREATING
         loadLabels()
         initInterpreter()
     }
@@ -80,32 +96,60 @@ class TfliteYoloDetector(
                 if (trimmed.isNotEmpty()) labels.add(trimmed)
             }
             reader.close()
-            Log.i(tag, "Loaded ${labels.size} COCO class labels from $labelsFileName")
+            Log.i(tag, "SUCCESS: Loaded ${labels.size} class labels from $labelsFileName")
         } catch (e: Exception) {
-            lastError = "Label load: ${e.message}"
-            Log.e(tag, "Failed to load labels ($labelsFileName): ${e.message}", e)
+            lastError = "Label load (${labelsFileName}): ${e.javaClass.simpleName}: ${e.message}"
+            Log.e(tag, "ERROR loading labels ($labelsFileName)", e)
         }
     }
 
     private fun initInterpreter() {
+        detectorState = DetectorState.LOADING_MODEL
         try {
-            val modelBytes = context.assets.open(modelFileName).readBytes()
-            val modelBuffer = ByteBuffer.allocateDirect(modelBytes.size).apply {
-                order(ByteOrder.nativeOrder())
-                put(modelBytes)
-                rewind()
+            val modelBuffer: ByteBuffer = try {
+                val afd: AssetFileDescriptor = context.assets.openFd(modelFileName)
+                val inputStream = FileInputStream(afd.fileDescriptor)
+                val fileChannel = inputStream.channel
+                val startOffset = afd.startOffset
+                val declaredLength = afd.declaredLength
+                val mapped = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
+                Log.i(tag, "SUCCESS: Memory-mapped $modelFileName (size: $declaredLength bytes)")
+                mapped
+            } catch (afdEx: Exception) {
+                Log.w(tag, "Asset openFd fallback (${afdEx.message}), loading via byte stream...")
+                val modelBytes = context.assets.open(modelFileName).readBytes()
+                val direct = ByteBuffer.allocateDirect(modelBytes.size).apply {
+                    order(ByteOrder.nativeOrder())
+                    put(modelBytes)
+                    rewind()
+                }
+                Log.i(tag, "SUCCESS: Loaded direct byte buffer for $modelFileName (${modelBytes.size} bytes)")
+                direct
             }
 
+            detectorState = DetectorState.CREATING_RUNTIME
             val cpuOptions = Interpreter.Options().apply {
                 setNumThreads(4)
                 setUseXNNPACK(true)
             }
             interpreter = Interpreter(modelBuffer, cpuOptions)
+
+            // Validate Input and Output Tensors
+            val inputTensor = interpreter?.getInputTensor(0)
+            val outputTensor = interpreter?.getOutputTensor(0)
+            val inputShapeStr = inputTensor?.shape()?.contentToString() ?: "unknown"
+            val outputShapeStr = outputTensor?.shape()?.contentToString() ?: "unknown"
+            Log.i(tag, "TFLite Model Verified: Input Shape=$inputShapeStr, Output Shape=$outputShapeStr")
+
             activeDevice = "YOLO26n 320 (XNNPACK 4T)"
-            Log.i(tag, "Initialized TFLite ($modelFileName) with XNNPACK 4T CPU successfully")
+            detectorState = DetectorState.READY
+            lastError = null
+            Log.i(tag, "=== OBJECT DETECTOR READY ===")
         } catch (e: Exception) {
-            lastError = "Init TFLite: ${e.message}"
-            Log.e(tag, "Failed to initialize TFLite interpreter from $modelFileName: ${e.message}", e)
+            detectorState = DetectorState.FAILED
+            lastError = "Detector Init Failed: ${e.javaClass.simpleName}: ${e.message}"
+            activeDevice = "FAILED: ${e.javaClass.simpleName}"
+            Log.e(tag, "CRITICAL INITIALIZATION FAILURE: Could not initialize TFLite interpreter from $modelFileName", e)
         }
     }
 
@@ -116,9 +160,9 @@ class TfliteYoloDetector(
     @Synchronized
     fun detect(bitmap: Bitmap): List<Detection> {
         val interp = interpreter
-        if (interp == null) {
-            lastError = "Interpreter not initialized"
-            Log.e(tag, "detect called but interpreter is null! error=$lastError")
+        if (interp == null || detectorState != DetectorState.READY) {
+            lastError = if (lastError != null) lastError else "Interpreter not initialized (state=$detectorState)"
+            Log.e(tag, "detect called but interpreter is NOT ready! state=$detectorState, error=$lastError")
             return emptyList()
         }
 
@@ -221,7 +265,7 @@ class TfliteYoloDetector(
             return finalDetections
 
         } catch (e: Exception) {
-            lastError = "TFLite inference: ${e.message}"
+            lastError = "TFLite inference: ${e.javaClass.simpleName}: ${e.message}"
             Log.e(tag, "Inference error: ${e.message}", e)
         }
 
@@ -279,6 +323,8 @@ class TfliteYoloDetector(
     }
 
     fun close() {
+        detectorState = DetectorState.CREATING
         interpreter?.close()
+        interpreter = null
     }
 }
