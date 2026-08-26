@@ -198,9 +198,13 @@ class MainActivity : AppCompatActivity() {
         currentDetections = detections
 
         // 2. Asynchronous Face Recognition Dispatch (Throttled to 4.5 FPS + Track-Aware)
-        // Hard requirement: Only scan faces if unannounced candidate tracks exist and >= 220ms elapsed
         val now = SystemClock.elapsedRealtime()
         val hasPersons = detections.any { it.className.equals("person", ignoreCase = true) }
+
+        if (!hasPersons) {
+            activeRecognizedFaces.set(emptyList())
+        }
+
         val hasUnannouncedPerson = hasPersons && (
             decisionEngine.trackedObjects.isEmpty() ||
             decisionEngine.trackedObjects.values.any {
@@ -227,8 +231,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Get latest identified faces instantly (0ms lock-free read)
-        val faces = activeRecognizedFaces.get()
+        // Get latest identified faces with freshness check (expire after 400ms so stale boxes never stick)
+        val faces = if (hasPersons && (now - lastFaceScanTime <= 400L)) {
+            activeRecognizedFaces.get()
+        } else {
+            emptyList()
+        }
 
         // 3. Decision Engine with Scale-Invariant Tracking & Face Integration
         val event = decisionEngine.evaluate(detections, faces)

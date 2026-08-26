@@ -27,7 +27,7 @@ class OverlayView @JvmOverloads constructor(
 
     private val facePaint = Paint().apply {
         style = Paint.Style.STROKE
-        strokeWidth = 6f
+        strokeWidth = 5f
         isAntiAlias = true
     }
 
@@ -98,16 +98,24 @@ class OverlayView @JvmOverloads constructor(
         canvas.drawLine(w * 0.30f, 0f, w * 0.30f, h, corridorPaint)
         canvas.drawLine(w * 0.70f, 0f, w * 0.70f, h, corridorPaint)
 
-        // 2. Draw Object Detections
+        // 2. Draw Real-Time Dynamic Object & Identified Person Bounding Boxes
         for (det in detections) {
             val left = det.bbox.left * w
             val top = det.bbox.top * h
             val right = det.bbox.right * w
             val bottom = det.bbox.bottom * h
 
-            // Color coding based on Hazard Level
+            // If the person is identified with an enrolled name, det.className contains their name
+            val isRecognizedContact = recognizedFaces.any { it.isKnown && it.name.equals(det.className, ignoreCase = true) } ||
+                (!det.className.equals("person", ignoreCase = true) &&
+                 !det.className.equals("chair", ignoreCase = true) &&
+                 !det.className.equals("cell phone", ignoreCase = true) &&
+                 !det.className.equals("bottle", ignoreCase = true) &&
+                 !det.className.equals("car", ignoreCase = true))
+
             val isObstruction = hazardEvent?.allHazards?.any { it.className.equals(det.className, true) } == true
             boxPaint.color = when {
+                isRecognizedContact -> Color.parseColor("#00FFFF") // Vibrant Cyan for recognized person
                 isObstruction && det.areaRatio >= 0.15f -> Color.RED
                 isObstruction -> Color.parseColor("#FFA500") // Orange
                 det.region == "center" -> Color.YELLOW
@@ -117,35 +125,30 @@ class OverlayView @JvmOverloads constructor(
             canvas.drawRect(left, top, right, bottom, boxPaint)
 
             val distStr = if (det.estimatedDistanceM > 0) " (%.1fm)".format(det.estimatedDistanceM) else ""
-            val label = "${det.className.uppercase()} %.0f%%%s".format(det.confidence * 100, distStr)
-            canvas.drawText(label, left + 4f, max(top - 8f, 25f), textPaint)
+            val prefix = if (isRecognizedContact) "👤 " else ""
+            val label = "$prefix${det.className.uppercase()} %.0f%%%s".format(det.confidence * 100, distStr)
+            
+            if (isRecognizedContact) {
+                faceTextPaint.color = Color.parseColor("#00FFFF")
+                canvas.drawText(label, left + 4f, max(top - 8f, 25f), faceTextPaint)
+            } else {
+                canvas.drawText(label, left + 4f, max(top - 8f, 25f), textPaint)
+            }
         }
 
-        // 3. Draw Real-Time Face Recognition Overlay
+        // 3. Draw Real-Time Gaze Indicator (Only when an unknown face is actively looking at user)
         for (face in recognizedFaces) {
-            val left = face.bbox.left * w
-            val top = face.bbox.top * h
-            val right = face.bbox.right * w
-            val bottom = face.bbox.bottom * h
+            if (face.isFacingUser && !face.isKnown) {
+                val left = face.bbox.left * w
+                val top = face.bbox.top * h
+                val right = face.bbox.right * w
+                val bottom = face.bbox.bottom * h
 
-            if (face.isKnown) {
-                facePaint.color = Color.parseColor("#00FFFF") // Cyan for known contact
-                faceTextPaint.color = Color.parseColor("#00FFFF")
-            } else {
-                facePaint.color = Color.parseColor("#FFD700") // Gold for unknown face
+                facePaint.color = Color.parseColor("#FFD700") // Gold
                 faceTextPaint.color = Color.parseColor("#FFD700")
+                canvas.drawRect(left, top, right, bottom, facePaint)
+                canvas.drawText("LOOKING AT YOU", left + 4f, max(top - 8f, 30f), faceTextPaint)
             }
-
-            canvas.drawRect(left, top, right, bottom, facePaint)
-
-            val faceLabel = if (face.isKnown) {
-                "👤 ${face.name?.uppercase()}"
-            } else if (face.isFacingUser) {
-                "LOOKING AT YOU"
-            } else {
-                "FACE"
-            }
-            canvas.drawText(faceLabel, left + 4f, max(top - 8f, 30f), faceTextPaint)
         }
 
         // 4. Draw Performance Diagnostic HUD (Top Left)
