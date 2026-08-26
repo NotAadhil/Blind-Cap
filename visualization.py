@@ -233,7 +233,7 @@ class Visualizer:
             y += px
 
         # Title
-        line("BLIND CAP - ASSIST", scale=0.50, colour=(0, 220, 255))
+        line("OCULUS AI - ASSIST", scale=0.50, colour=(0, 220, 255))
         spacer()
 
         # Performance

@@ -38,7 +38,7 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: BlindCap-Android-APK
+          name: OculusAI-Android-APK
           path: android_app/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
@@ -47,9 +47,9 @@ jobs:
         continue-on-error: true
         with:
           tag_name: v1.0.${{ github.run_number }}-face-opt
-          name: Blind Cap Mobile App v1.0.${{ github.run_number }} (Face Recognition & High FPS)
+          name: Oculus AI Mobile App v1.0.${{ github.run_number }} (Face Recognition & High FPS)
           body: |
-            ## Blind Cap Mobile Android App - Face Identification & High FPS Update
+            ## Oculus AI Mobile Android App - Face Identification & High FPS Update
             - **Face Identification (Named Contacts)**: ML Kit Face Detection + MobileFaceNet on-device facial embeddings.
             - **High Frame Rate ($25\text{–}30+\text{ FPS}$)**: Non-blocking parallel AI vision pipeline with zero-allocation camera frames.
             - Download `app-debug.apk` below for 1-click installation on Android.

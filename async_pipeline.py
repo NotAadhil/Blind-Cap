@@ -115,7 +115,7 @@ class AsyncVisionPipeline:
         # Startup speech confirmation
         if self.tts:
             self.tts.speak(
-                "Blind Cap ready.",
+                "Oculus AI ready.",
                 priority=100,
                 severity=SEVERITY_WARNING,
                 category="system",

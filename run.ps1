@@ -1,6 +1,6 @@
-﻿# Blind Cap - 1-Click PowerShell Launcher
+# Oculus AI - 1-Click PowerShell Launcher
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "       BLIND CAP - ACCESSIBLE VISION & 3D AUDIO SYSTEM" -ForegroundColor Cyan
+Write-Host "       OCULUS AI - ACCESSIBLE VISION & 3D AUDIO SYSTEM" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
 # Check Python
@@ -33,5 +33,5 @@ if (-not (Test-Path "models\yolo26m_480_openvino\yolo26m.xml")) {
     Write-Host "[3/3] Model ready." -ForegroundColor Green
 }
 
-Write-Host "`nStarting Blind Cap in 60 FPS Viewfinder Mode...`n" -ForegroundColor Green
+Write-Host "`nStarting Oculus AI in 60 FPS Viewfinder Mode...`n" -ForegroundColor Green
 python main.py

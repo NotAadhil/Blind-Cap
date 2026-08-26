@@ -208,7 +208,7 @@ class OpenCVCamera(FrameSource):
         cv2.rectangle(frame, (10, 10), (self._width - 10, self._height - 10), (0, 180, 255), 2)
 
         font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(frame, "BLIND CAP - CAMERA FEED", (self._width // 2 - 160, self._height // 2 - 50),
+        cv2.putText(frame, "OCULUS AI - CAMERA FEED", (self._width // 2 - 160, self._height // 2 - 50),
                     font, 0.7, (0, 220, 255), 2, cv2.LINE_AA)
         cv2.putText(frame, f"Camera Index {self._camera_index} Offline", (self._width // 2 - 140, self._height // 2 - 10),
                     font, 0.6, (0, 100, 255), 2, cv2.LINE_AA)

@@ -60,9 +60,9 @@ enum class VideoInputSource {
 
 class MainActivity : AppCompatActivity() {
 
-    private val tag = "BlindCapMainActivity"
+    private val tag = "OculusMainActivity"
     private val cameraPermissionCode = 1001
-    private val prefsName = "BlindCapPrefs"
+    private val prefsName = "OculusPrefs"
     private val keyStreamUrl = "esp32_stream_url"
     private val defaultStreamUrl = "http://192.168.4.1:81/stream"
 
@@ -147,7 +147,7 @@ class MainActivity : AppCompatActivity() {
         )
 
         ttsManager = TtsManager(this) {
-            ttsManager.speak("Blind Cap ready.", priority = 50, severity = "INFO")
+            ttsManager.speak("Oculus AI ready.", priority = 50, severity = "INFO")
         }
 
         setupGestures()
@@ -182,7 +182,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-        }, "BlindCap-AI-Worker").apply {
+        }, "Oculus-AI-Worker").apply {
             priority = Thread.NORM_PRIORITY + 2
             isDaemon = true
             start()

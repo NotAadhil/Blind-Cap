@@ -1,6 +1,6 @@
-﻿# Blind Cap Android Mobile Application
+# Oculus AI Android Mobile Application
 
-This is the standalone Android application for Blind Cap, providing real-time on-device assistive vision, spatial walking corridor tracking, Danger Zone Stop warnings, on-demand OCR, and offline speech synthesis.
+This is the standalone Android application for Oculus AI, providing real-time on-device assistive vision, spatial walking corridor tracking, Danger Zone Stop warnings, on-demand OCR, and offline speech synthesis.
 
 ## Features
 - 100% On-Device Processing: Zero cloud dependencies, zero data usage.

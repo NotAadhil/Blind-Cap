@@ -157,7 +157,7 @@ class OverlayView @JvmOverloads constructor(
         var yPos = startY + 34f
         val lineGap = 34f
 
-        canvas.drawText("BLIND CAP PERFORMANCE", startX + 16f, yPos, textPaint)
+        canvas.drawText("OCULUS AI PERFORMANCE", startX + 16f, yPos, textPaint)
         yPos += lineGap
         canvas.drawText("Camera: %.0f FPS  |  AI: %.1f FPS".format(cameraFps, aiFps), startX + 16f, yPos, textPaint)
         yPos += lineGap

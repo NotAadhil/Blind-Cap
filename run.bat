@@ -1,7 +1,7 @@
 @echo off
-title Blind Cap - Assistive Vision System
+title Oculus AI - Assistive Vision System
 echo ============================================================
-echo        BLIND CAP - ACCESSIBLE VISION & 3D AUDIO SYSTEM
+echo        OCULUS AI - ACCESSIBLE VISION & 3D AUDIO SYSTEM
 echo ============================================================
 echo.
 
@@ -37,7 +37,7 @@ if not exist "models\yolo26m_480_openvino\yolo26m.xml" (
 
 echo.
 echo ============================================================
-echo  Starting Blind Cap in 60 FPS Viewfinder Mode...
+echo  Starting Oculus AI in 60 FPS Viewfinder Mode...
 echo ============================================================
 echo.
 

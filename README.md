@@ -1,4 +1,4 @@
-# Blind Cap: Real-Time Assistive Vision and Spatial Audio Prototype
+# Oculus AI: Real-Time Assistive Vision and Spatial Audio Prototype
 
 ## Safety Disclaimer
 This project is an experimental research prototype, NOT a certified medical or mobility device. It cannot guarantee detection of every obstacle. Absence of a detection does not mean that the path is clear or safe. Never rely on this software as your primary or sole method of navigation. Always use standard mobility aids, canes, guide dogs, and certified orientation techniques.
@@ -6,7 +6,7 @@ This project is an experimental research prototype, NOT a certified medical or m
 ---
 
 ## Overview
-Blind Cap is an intelligent, real-time assistive vision system designed to help visually impaired individuals perceive their surroundings and navigate obstacles safely.
+Oculus AI is an intelligent, real-time assistive vision system designed to help visually impaired individuals perceive their surroundings and navigate obstacles safely.
 
 The software captures video from a camera mounted on a wearable cap or webcam, detects objects across 80 categories, tracks their physical positions and metric distances, and provides concise, event-driven voice feedback using text-to-speech.
 

@@ -300,7 +300,7 @@ class Config:
     BENCHMARK_OVERLAY: bool = False
 
     # OpenCV window title
-    WINDOW_TITLE: str = "Blind Cap - Assistive Vision (YOLO26n + OpenVINO)"
+    WINDOW_TITLE: str = "Oculus AI - Assistive Vision (YOLO26n + OpenVINO)"
 
 
 # -------------------------------------------------------------------------

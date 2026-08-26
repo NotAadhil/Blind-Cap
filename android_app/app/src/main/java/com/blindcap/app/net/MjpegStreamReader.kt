@@ -56,7 +56,7 @@ class MjpegStreamReader(
                     readTimeout = 7000
                     useCaches = false
                     requestMethod = "GET"
-                    setRequestProperty("User-Agent", "BlindCap-Android")
+                    setRequestProperty("User-Agent", "OculusAI-Android")
                     setRequestProperty("Connection", "keep-alive")
                 }
 

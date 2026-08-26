@@ -42,7 +42,7 @@ logger = get_logger(__name__)
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Blind Cap: Assistive Vision Prototype (YOLO26n + OpenVINO + 3D Audio)"
+        description="Oculus AI: Assistive Vision Prototype (YOLO26n + OpenVINO + 3D Audio)"
     )
     parser.add_argument(
         "--device", choices=["GPU", "CPU", "AUTO"], default="GPU",
@@ -86,7 +86,7 @@ def main() -> None:
     if args.mute:
         config.TTS_ENABLED = False
 
-    logger.info("Starting Blind Cap Assistive Vision System...")
+    logger.info("Starting Oculus AI Assistive Vision System...")
 
     # --- 1. Hardware diagnostics ---
     run_diagnostics(verbose=True)
@@ -120,7 +120,7 @@ def main() -> None:
 
     # --- Startup banner ---
     print("\n" + "=" * 60)
-    print("       BLIND CAP - ACCESSIBLE VISION & 3D AUDIO SYSTEM")
+    print("       OCULUS AI - ACCESSIBLE VISION & 3D AUDIO SYSTEM")
     print("=" * 60)
     print(f"  Model:        {config.MODEL_NAME}")
     print(f"  Device:       {detector.active_device} ({detector.device_full_name})")
@@ -223,10 +223,10 @@ def main() -> None:
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
     finally:
-        logger.info("Shutting down Blind Cap...")
+        logger.info("Shutting down Oculus AI...")
         pipeline.shutdown()
         cv2.destroyAllWindows()
-        logger.info("Blind Cap stopped.")
+        logger.info("Oculus AI stopped.")
 
 
 if __name__ == "__main__":
