@@ -38,6 +38,7 @@ import com.blindcap.app.ai.TfliteYoloDetector
 import com.blindcap.app.databinding.ActivityMainBinding
 import com.blindcap.app.engine.DecisionEngine
 import com.blindcap.app.engine.DepthEstimator
+import com.blindcap.app.engine.RecognitionState
 import com.blindcap.app.net.MjpegStreamReader
 import com.blindcap.app.ocr.OcrManager
 import com.blindcap.app.speech.TtsManager
@@ -192,17 +193,26 @@ class MainActivity : AppCompatActivity() {
     private fun processAiFrame(bitmap: Bitmap) {
         latestBitmap = bitmap
 
-        // 1. Hardware Object Detection (YOLO26n / YOLOv8 - runs at full speed without waiting)
+        // 1. Hardware Object Detection (YOLO26n 320x320 - zero-allocation pipeline)
         val detections = detector.detect(bitmap)
         currentDetections = detections
 
-        // 2. Asynchronous Face Recognition Dispatch (Parallel non-blocking worker with Dual Strategy)
+        // 2. Asynchronous Face Recognition Dispatch (Throttled to 4.5 FPS + Track-Aware)
+        // Hard requirement: Only scan faces if unannounced candidate tracks exist and >= 220ms elapsed
         val now = SystemClock.elapsedRealtime()
-        val hasPerson = detections.any { it.className.equals("person", ignoreCase = true) }
+        val hasPersons = detections.any { it.className.equals("person", ignoreCase = true) }
+        val hasUnannouncedPerson = hasPersons && (
+            decisionEngine.trackedObjects.isEmpty() ||
+            decisionEngine.trackedObjects.values.any {
+                it.className.equals("person", ignoreCase = true) &&
+                it.recognitionState != RecognitionState.ANNOUNCED &&
+                it.recognitionState != RecognitionState.TRACKING
+            }
+        )
 
-        if ((hasPerson || (now - lastFaceScanTime >= 400L)) && !isFaceScanning.get()) {
-            lastFaceScanTime = now
+        if ((now - lastFaceScanTime >= 220L) && hasUnannouncedPerson && !isFaceScanning.get()) {
             if (isFaceScanning.compareAndSet(false, true)) {
+                lastFaceScanTime = now
                 // Pass immutable frame snapshot and detections to background face worker
                 faceExecutor.execute {
                     try {
@@ -236,6 +246,7 @@ class MainActivity : AppCompatActivity() {
         val sourceLabel = if (currentSource == VideoInputSource.PHONE_CAMERA) "Phone" else "ESP32"
         val ttsStatus = if (ttsManager.isSpeaking) "SPEAKING" else "SILENT"
         val faceDiag = faceRecognitionManager.lastDiagnostic
+        val faceScanTimeMs = faceRecognitionManager.lastFaceScanMs
 
         runOnUiThread {
             binding.overlayView.cameraFps = currentCameraFps
@@ -245,6 +256,7 @@ class MainActivity : AppCompatActivity() {
             binding.overlayView.ttsStatus = ttsStatus
             binding.overlayView.errorMessage = detector.lastError
             binding.overlayView.faceDiagnostic = faceDiag
+            binding.overlayView.faceScanMs = faceScanTimeMs
             binding.overlayView.updateResults(detections, event, faces)
         }
     }
@@ -602,7 +614,9 @@ class MainActivity : AppCompatActivity() {
                 val matrix = Matrix().apply {
                     postRotate(rotationDegrees.toFloat())
                 }
-                Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
+                val rotated = Bitmap.createBitmap(rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, matrix, true)
+                rawBitmap.recycle()
+                rotated
             } else {
                 rawBitmap
             }

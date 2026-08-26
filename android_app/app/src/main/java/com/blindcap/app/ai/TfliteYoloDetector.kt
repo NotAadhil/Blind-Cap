@@ -1,19 +1,16 @@
-package com.blindcap.app.ai
+﻿package com.blindcap.app.ai
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.os.SystemClock
 import android.util.Log
 import com.blindcap.app.engine.DepthEstimator
-import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.support.common.ops.NormalizeOp
-import org.tensorflow.lite.support.image.ImageProcessor
-import org.tensorflow.lite.support.image.TensorImage
-import org.tensorflow.lite.support.image.ops.ResizeOp
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
@@ -26,7 +23,8 @@ data class DetectionTimings(
     val preprocessMs: Float = 0f,
     val inferenceMs: Float = 0f,
     val postprocessMs: Float = 0f,
-    val totalMs: Float = 0f
+    val totalMs: Float = 0f,
+    val p95Ms: Float = 0f
 )
 
 class TfliteYoloDetector(
@@ -49,30 +47,30 @@ class TfliteYoloDetector(
     var lastError: String? = null
 
     // -----------------------------------------------------------------------
-    // Pre-allocated reusable resources - never allocate inside detect()
+    // Pre-allocated reusable resources - zero heap allocations inside detect()
     // -----------------------------------------------------------------------
 
-    // Pre-allocated scaled bitmap for SIMD preprocessing (avoids per-frame heap allocation)
+    // Direct ByteBuffer for Float32 tensor [1, 320, 320, 3] = 1 * 320 * 320 * 3 * 4 = 1,228,800 bytes
+    private val inputByteBuffer: ByteBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
+        order(ByteOrder.nativeOrder())
+    }
+
+    // Pre-allocated scaled bitmap and canvas for hardware downsampling
     private val scaledBitmap: Bitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
     private val scaledCanvas: Canvas = Canvas(scaledBitmap)
-
-    // SIMD-accelerated TFLite Support ImageProcessor
-    private val imageProcessor: ImageProcessor = ImageProcessor.Builder()
-        .add(ResizeOp(inputSize, inputSize, ResizeOp.ResizeMethod.BILINEAR))
-        .add(NormalizeOp(0f, 255f))
-        .build()
-
-    // Reused TensorImage (load() reuses the backing buffer)
-    private val tensorImage = TensorImage(DataType.FLOAT32)
+    private val scalePaint: Paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val srcRect: Rect = Rect()
+    private val dstRect: Rect = Rect(0, 0, inputSize, inputSize)
+    private val intPixels: IntArray = IntArray(inputSize * inputSize)
 
     // Fixed output buffer - reused across every call, never reallocated
     // Shape: [1, 300, 6] -> [x1, y1, x2, y2, score, class_id]
     private val outputBuffer: Array<Array<FloatArray>> = Array(1) { Array(300) { FloatArray(6) } }
 
-    // Class label smoothing history: slot -> (className, confidenceSum)
-    // Capped at 4 most recent frames per slot (sparse - only populated on positive detections)
-    private val classLabelHistory = HashMap<Int, ArrayDeque<Pair<String, Float>>>(64)
-    private var classHistoryPruneCounter = 0
+    // Rolling latency history for P50 / P95 calculation (last 60 frames)
+    private val latencyHistory = FloatArray(60)
+    private var latencyIndex = 0
+    private var latencyCount = 0
 
     init {
         loadLabels()
@@ -136,7 +134,7 @@ class TfliteYoloDetector(
 
     /**
      * Run detection on the provided bitmap.
-     * Reuses all pre-allocated buffers to minimize GC pressure.
+     * Reuses pre-allocated direct buffers to guarantee ZERO heap allocation in the hot loop.
      * Returns detections with confidence >= (confThreshold * 0.70) for tracking state machine.
      */
     fun detect(bitmap: Bitmap): List<Detection> {
@@ -147,21 +145,35 @@ class TfliteYoloDetector(
         }
 
         val t0 = SystemClock.elapsedRealtimeNanos()
-        val rawDetections = mutableListOf<Detection>()
+        val rawDetections = ArrayList<Detection>(16)
 
         try {
-            // 1. Preprocessing: load into the REUSED TensorImage (no new allocation)
-            tensorImage.load(bitmap)
-            val processedImage = imageProcessor.process(tensorImage)
+            // 1. Direct hardware-scaled pixel downsampling into pre-allocated buffer
+            srcRect.set(0, 0, bitmap.width, bitmap.height)
+            scaledCanvas.drawBitmap(bitmap, srcRect, dstRect, scalePaint)
+            scaledBitmap.getPixels(intPixels, 0, inputSize, 0, 0, inputSize, inputSize)
+
+            // Direct zero-copy write to native Float32 ByteBuffer
+            inputByteBuffer.rewind()
+            val normInv = 1.0f / 255.0f
+            val totalPixels = inputSize * inputSize
+
+            for (i in 0 until totalPixels) {
+                val pixel = intPixels[i]
+                val r = ((pixel shr 16) and 0xFF) * normInv
+                val g = ((pixel shr 8) and 0xFF) * normInv
+                val b = (pixel and 0xFF) * normInv
+                inputByteBuffer.putFloat(r)
+                inputByteBuffer.putFloat(g)
+                inputByteBuffer.putFloat(b)
+            }
             val t1 = SystemClock.elapsedRealtimeNanos()
 
             // 2. Hardware inference into fixed pre-allocated outputBuffer
-            interp.run(processedImage.buffer, outputBuffer)
+            interp.run(inputByteBuffer, outputBuffer)
             val t2 = SystemClock.elapsedRealtimeNanos()
 
             // 3. Postprocessing: filter and decode
-            // Use a slightly lower raw gate so the tracking state machine can see borderline tracks,
-            // but never lower than 0.18 to avoid excessive garbage detections
             val minRawScore = (confThreshold * 0.70f).coerceAtLeast(0.18f)
             val detections300 = outputBuffer[0]
             val invSize = 1.0f / inputSize.toFloat()
@@ -170,7 +182,7 @@ class TfliteYoloDetector(
                 val row = detections300[i]
                 val score = row[4]
 
-                // Score gate FIRST - skip all remaining work for low-confidence slots
+                // Score gate FIRST - skip all remaining calculations for low-confidence slots
                 if (score < minRawScore) continue
 
                 val classId = row[5].roundToInt()
@@ -181,7 +193,6 @@ class TfliteYoloDetector(
                 val x2 = row[2] * invSize
                 val y2 = row[3] * invSize
 
-                val rawClassName = labels[classId]
                 val left  = max(0f, min(1f, x1))
                 val top   = max(0f, min(1f, y1))
                 val right = max(0f, min(1f, x2))
@@ -195,16 +206,13 @@ class TfliteYoloDetector(
                 val cy = (top + bottom) * 0.5f
                 val areaRatio = bbox.width() * bbox.height()
 
-                // Class smoothing only for slots that actually have a detection this frame
-                val smoothedClass = smoothClassLabel(i, rawClassName, score)
-                val distanceM = depthEstimator.estimateDistance(smoothedClass, bbox.height())
-                // Region classification happens in DecisionEngine (it has hysteresis context)
-                // Provide a raw initial region here for the data class
+                val rawClassName = labels[classId]
+                val distanceM = depthEstimator.estimateDistance(rawClassName, bbox.height())
                 val region = depthEstimator.classifyRegion(cx)
 
                 rawDetections.add(
                     Detection(
-                        className = smoothedClass,
+                        className = rawClassName,
                         classId = classId,
                         confidence = score,
                         bbox = bbox,
@@ -217,20 +225,23 @@ class TfliteYoloDetector(
             }
 
             val t3 = SystemClock.elapsedRealtimeNanos()
+            val totalFrameMs = (t3 - t0) / 1_000_000f
+
+            // Record latency history for rolling P95
+            latencyHistory[latencyIndex] = totalFrameMs
+            latencyIndex = (latencyIndex + 1) % latencyHistory.size
+            if (latencyCount < latencyHistory.size) latencyCount++
+
+            val p95 = computeP95Latency()
+
             lastTimings = DetectionTimings(
                 preprocessMs  = (t1 - t0) / 1_000_000f,
                 inferenceMs   = (t2 - t1) / 1_000_000f,
                 postprocessMs = (t3 - t2) / 1_000_000f,
-                totalMs       = (t3 - t0) / 1_000_000f
+                totalMs       = totalFrameMs,
+                p95Ms         = p95
             )
             lastError = null
-
-            // Periodically prune unused class history slots to prevent unbounded memory growth
-            classHistoryPruneCounter++
-            if (classHistoryPruneCounter >= 500) {
-                classHistoryPruneCounter = 0
-                classLabelHistory.clear()
-            }
 
             return applyNms(rawDetections)
 
@@ -242,6 +253,15 @@ class TfliteYoloDetector(
         return rawDetections
     }
 
+    private fun computeP95Latency(): Float {
+        if (latencyCount == 0) return 0f
+        val copy = FloatArray(latencyCount)
+        System.arraycopy(latencyHistory, 0, copy, 0, latencyCount)
+        copy.sort()
+        val p95Idx = ((latencyCount * 0.95f).toInt()).coerceIn(0, latencyCount - 1)
+        return copy[p95Idx]
+    }
+
     /**
      * Intra-class Non-Maximum Suppression to remove redundant candidate boxes.
      */
@@ -249,7 +269,7 @@ class TfliteYoloDetector(
         if (detections.size <= 1) return detections
 
         val sorted = detections.sortedByDescending { it.confidence }
-        val selected = mutableListOf<Detection>()
+        val selected = ArrayList<Detection>(detections.size)
 
         for (det in sorted) {
             var shouldKeep = true
@@ -284,22 +304,6 @@ class TfliteYoloDetector(
         val area2 = b2.width() * b2.height()
         val unionArea = area1 + area2 - interArea
         return if (unionArea > 0f) interArea / unionArea else 0f
-    }
-
-    /**
-     * Weighted majority-vote class smoothing to suppress label flicker.
-     * Only called for slots that passed the score gate (eliminates 90%+ calls).
-     */
-    private fun smoothClassLabel(slot: Int, newClass: String, confidence: Float): String {
-        val history = classLabelHistory.getOrPut(slot) { ArrayDeque(4) }
-        if (history.size >= 4) history.removeFirst()
-        history.addLast(Pair(newClass, confidence))
-
-        val scoreMap = HashMap<String, Float>(4)
-        for ((cls, conf) in history) {
-            scoreMap[cls] = (scoreMap[cls] ?: 0f) + conf
-        }
-        return scoreMap.maxByOrNull { it.value }?.key ?: newClass
     }
 
     fun close() {

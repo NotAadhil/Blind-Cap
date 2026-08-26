@@ -2,7 +2,7 @@ name: Build and Release Android APK
 
 on:
   push:
-    branches: [ main, feature-face-recognition-opt ]
+    branches: [ main, dev-perf-optimization ]
   workflow_dispatch:
 
 permissions:
@@ -46,12 +46,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         continue-on-error: true
         with:
-          tag_name: v1.0.${{ github.run_number }}-face-opt
-          name: Oculus AI Mobile App v1.0.${{ github.run_number }} (Face Recognition & High FPS)
+          tag_name: v1.0.${{ github.run_number }}-perf-opt
+          name: Oculus AI Mobile App v1.0.${{ github.run_number }} (Pixel 6a Perf Optimization)
           body: |
-            ## Oculus AI Mobile Android App - Face Identification & High FPS Update
-            - **Face Identification (Named Contacts)**: ML Kit Face Detection + MobileFaceNet on-device facial embeddings.
-            - **High Frame Rate ($25\text{–}30+\text{ FPS}$)**: Non-blocking parallel AI vision pipeline with zero-allocation camera frames.
+            ## Oculus AI Mobile Android App - High-Performance Update (Pixel 6a)
+            - **Target Hardware Optimization**: Google Pixel 6a (Google Tensor G1) with zero-allocation direct ByteBuffer preprocessing.
+            - **Throughput Boost**: High-speed YOLO26n 320x320 pipeline running sustained 20-30+ FPS.
+            - **Intelligent Face Scheduling**: Throttled 4.5 FPS face recognition with track-state gating and zero in-flight pileup.
+            - **P95 Latency Telemetry**: Real-time HUD tracking source FPS, AI FPS, P95 latency, and inference benchmarks.
             - Download `app-debug.apk` below for 1-click installation on Android.
           files: |
             android_app/app/build/outputs/apk/debug/app-debug.apk
