@@ -2,14 +2,16 @@
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
 import android.os.SystemClock
 import android.util.Log
 import com.blindcap.app.engine.DepthEstimator
+import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.support.common.ops.NormalizeOp
+import org.tensorflow.lite.support.image.ImageProcessor
+import org.tensorflow.lite.support.image.TensorImage
+import org.tensorflow.lite.support.image.ops.ResizeOp
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
@@ -28,9 +30,10 @@ data class DetectionTimings(
 
 class TfliteYoloDetector(
     private val context: Context,
-    private val modelFileName: String = "yolo26n_320_float32.tflite",
-    private val labelsFileName: String = "coco_labels.txt",
-    private val confThreshold: Float = 0.35f,
+    private val depthEstimator: DepthEstimator = DepthEstimator(),
+    private val modelFileName: String = "yolo.tflite",
+    private val labelsFileName: String = "labels.txt",
+    var confThreshold: Float = 0.30f,
     private val iouThreshold: Float = 0.45f
 ) {
 
@@ -39,7 +42,6 @@ class TfliteYoloDetector(
     private val labels = mutableListOf<String>()
 
     val inputSize = 320
-    private val depthEstimator = DepthEstimator()
 
     var activeDevice: String = "Initializing..."
         private set
@@ -50,18 +52,12 @@ class TfliteYoloDetector(
     var lastError: String? = null
         private set
 
-    // Direct ByteBuffer for Float32 tensor [1, 320, 320, 3] = 1 * 320 * 320 * 3 * 4 = 1,228,800 bytes
-    private val inputByteBuffer: ByteBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
-        order(ByteOrder.nativeOrder())
-    }
-
-    // Pre-allocated scaled bitmap and canvas for hardware downsampling
-    private val scaledBitmap: Bitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
-    private val scaledCanvas: Canvas = Canvas(scaledBitmap)
-    private val scalePaint: Paint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val srcRect: Rect = Rect()
-    private val dstRect: Rect = Rect(0, 0, inputSize, inputSize)
-    private val intPixels: IntArray = IntArray(inputSize * inputSize)
+    // Reusable TensorImage and ImageProcessor (Float32 normalized [0.0, 1.0])
+    private val tensorImage = TensorImage(DataType.FLOAT32)
+    private val imageProcessor = ImageProcessor.Builder()
+        .add(ResizeOp(inputSize, inputSize, ResizeOp.ResizeMethod.BILINEAR))
+        .add(NormalizeOp(0f, 255f))
+        .build()
 
     // Fixed output buffer - reused across every call, never reallocated
     // Shape: [1, 300, 6] -> [x1, y1, x2, y2, score, class_id]
@@ -85,10 +81,10 @@ class TfliteYoloDetector(
                 if (trimmed.isNotEmpty()) labels.add(trimmed)
             }
             reader.close()
-            Log.i(tag, "Loaded ${labels.size} COCO class labels")
+            Log.i(tag, "Loaded ${labels.size} COCO class labels from $labelsFileName")
         } catch (e: Exception) {
             lastError = "Label load: ${e.message}"
-            Log.e(tag, "Failed to load labels: ${e.message}", e)
+            Log.e(tag, "Failed to load labels ($labelsFileName): ${e.message}", e)
         }
     }
 
@@ -107,10 +103,10 @@ class TfliteYoloDetector(
             }
             interpreter = Interpreter(modelBuffer, cpuOptions)
             activeDevice = "YOLO26n 320 (XNNPACK 4T)"
-            Log.i(tag, "Initialized TFLite with XNNPACK 4T CPU successfully (~18ms inference)")
+            Log.i(tag, "Initialized TFLite ($modelFileName) with XNNPACK 4T CPU successfully")
         } catch (e: Exception) {
             lastError = "Init TFLite: ${e.message}"
-            Log.e(tag, "Failed to initialize TFLite interpreter: ${e.message}", e)
+            Log.e(tag, "Failed to initialize TFLite interpreter from $modelFileName: ${e.message}", e)
         }
     }
 
@@ -130,25 +126,9 @@ class TfliteYoloDetector(
         val rawDetections = ArrayList<Detection>(16)
 
         try {
-            // 1. Direct hardware-scaled pixel downsampling into pre-allocated buffer
-            srcRect.set(0, 0, bitmap.width, bitmap.height)
-            scaledCanvas.drawBitmap(bitmap, srcRect, dstRect, scalePaint)
-            scaledBitmap.getPixels(intPixels, 0, inputSize, 0, 0, inputSize, inputSize)
-
-            // Direct zero-copy write to native Float32 ByteBuffer
-            inputByteBuffer.rewind()
-            val normInv = 1.0f / 255.0f
-            val totalPixels = inputSize * inputSize
-
-            for (i in 0 until totalPixels) {
-                val pixel = intPixels[i]
-                val r = ((pixel shr 16) and 0xFF) * normInv
-                val g = ((pixel shr 8) and 0xFF) * normInv
-                val b = (pixel and 0xFF) * normInv
-                inputByteBuffer.putFloat(r)
-                inputByteBuffer.putFloat(g)
-                inputByteBuffer.putFloat(b)
-            }
+            // 1. Preprocessing: load and normalize into TensorImage
+            tensorImage.load(bitmap)
+            val processedImage = imageProcessor.process(tensorImage)
             val t1 = SystemClock.elapsedRealtimeNanos()
 
             // CRITICAL REGRESSION FIX: Explicitly zero-out output buffer before inference
@@ -165,11 +145,11 @@ class TfliteYoloDetector(
             }
 
             // 2. Hardware inference into fixed pre-allocated outputBuffer
-            interp.run(inputByteBuffer, outputBuffer)
+            interp.run(processedImage.buffer, outputBuffer)
             val t2 = SystemClock.elapsedRealtimeNanos()
 
             // 3. Postprocessing: filter and decode
-            val minRawScore = (confThreshold * 0.70f).coerceAtLeast(0.20f)
+            val minRawScore = (confThreshold * 0.70f).coerceAtLeast(0.18f)
             val invSize = 1.0f / inputSize.toFloat()
 
             for (i in 0 until 300) {
@@ -266,7 +246,7 @@ class TfliteYoloDetector(
         for (det in sorted) {
             var shouldKeep = true
             for (kept in selected) {
-                if (det.classId == kept.classId) {
+                if (det.classId == kept.classId || (det.className.equals("person", true) && kept.className.equals("person", true))) {
                     val iou = computeIoU(det.bbox, kept.bbox)
                     if (iou > iouThreshold) {
                         shouldKeep = false
@@ -300,6 +280,5 @@ class TfliteYoloDetector(
 
     fun close() {
         interpreter?.close()
-        scaledBitmap.recycle()
     }
 }
