@@ -81,6 +81,7 @@ class OverlayView @JvmOverloads constructor(
     var faceScanMs: Float = 0f
     var registeredContactNames: Set<String> = emptySet()
 
+    private var latestRenderedFrameId: Long = 0L
     private var detections: List<Detection> = emptyList()
     private var hazardEvent: HazardEvent? = null
     private var faceObservations: List<FaceObservation> = emptyList()
@@ -88,11 +89,19 @@ class OverlayView @JvmOverloads constructor(
     fun updateResults(
         newDetections: List<Detection>,
         newEvent: HazardEvent,
-        newObservations: List<FaceObservation> = emptyList()
+        newObservations: List<FaceObservation> = emptyList(),
+        frameId: Long = 0L
     ) {
-        detections = newDetections
+        if (frameId > 0L && frameId < latestRenderedFrameId) {
+            return // Drop stale out-of-order asynchronous result
+        }
+        if (frameId > 0L) {
+            latestRenderedFrameId = frameId
+        }
+
+        detections = newDetections.toList()
         hazardEvent = newEvent
-        faceObservations = newObservations
+        faceObservations = newObservations.toList()
         invalidate()
     }
 
@@ -110,12 +119,14 @@ class OverlayView @JvmOverloads constructor(
         canvas.drawLine(w * 0.30f, 0f, w * 0.30f, h, corridorPaint)
         canvas.drawLine(w * 0.70f, 0f, w * 0.70f, h, corridorPaint)
 
-        // 2. Draw Object Bounding Boxes (YOLO Detections)
+        // 2. Draw Object Bounding Boxes (Live YOLO Detections of CURRENT frame)
         for (det in detections) {
-            val left = det.bbox.left * w
-            val top = det.bbox.top * h
-            val right = det.bbox.right * w
-            val bottom = det.bbox.bottom * h
+            val left = (det.bbox.left * w).coerceIn(0f, w)
+            val top = (det.bbox.top * h).coerceIn(0f, h)
+            val right = (det.bbox.right * w).coerceIn(0f, w)
+            val bottom = (det.bbox.bottom * h).coerceIn(0f, h)
+
+            if (right <= left || bottom <= top) continue
 
             val isObstruction = hazardEvent?.allHazards?.any { it.className.equals(det.className, true) } == true
             boxPaint.color = when {
@@ -132,7 +143,7 @@ class OverlayView @JvmOverloads constructor(
             canvas.drawText(label, left + 4f, max(top - 8f, 25f), textPaint)
         }
 
-        // 3. Draw Dynamic Real-Time Face Observations (Freshness <= 300ms)
+        // 3. Draw Dynamic Real-Time Face Observations (Strict Freshness <= 300ms)
         val validObservations = faceObservations.filter { !it.isStale(now, maxAgeMs = 300L) }
         for (obs in validObservations) {
             val left = (obs.bbox.left * w).coerceIn(0f, w)

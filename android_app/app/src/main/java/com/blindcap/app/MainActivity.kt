@@ -1,13 +1,11 @@
-package com.blindcap.app
+﻿package com.blindcap.app
 
 import android.Manifest
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Matrix
-import android.graphics.Paint
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -16,7 +14,6 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.widget.EditText
-import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -31,7 +28,6 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.blindcap.app.ai.Detection
-import com.blindcap.app.ai.FaceContact
 import com.blindcap.app.ai.FaceRecognitionManager
 import com.blindcap.app.ai.RecognizedFace
 import com.blindcap.app.ai.TfliteYoloDetector
@@ -46,18 +42,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 enum class VideoInputSource {
     PHONE_CAMERA,
     ESP32_CAM
 }
+
+data class FramePayload(
+    val frameId: Long,
+    val bitmap: Bitmap,
+    val timestampMs: Long = SystemClock.elapsedRealtime()
+)
 
 class MainActivity : AppCompatActivity() {
 
@@ -68,24 +68,27 @@ class MainActivity : AppCompatActivity() {
     private val defaultStreamUrl = "http://192.168.4.1:81/stream"
 
     private lateinit var binding: ActivityMainBinding
-    private lateinit var cameraExecutor: ExecutorService
-    private lateinit var faceExecutor: ExecutorService
     private lateinit var prefs: SharedPreferences
-
-    private lateinit var depthEstimator: DepthEstimator
-    private lateinit var detector: TfliteYoloDetector
-    private lateinit var faceRecognitionManager: FaceRecognitionManager
-    private lateinit var decisionEngine: DecisionEngine
-    private lateinit var ttsManager: TtsManager
-    private lateinit var ocrManager: OcrManager
-    private lateinit var mjpegStreamReader: MjpegStreamReader
 
     private var currentSource = VideoInputSource.PHONE_CAMERA
     private var cameraProvider: ProcessCameraProvider? = null
 
-    // Decoupled Frame Transfer
-    private val latestFrameRef = AtomicReference<Bitmap?>(null)
-    private val isAiRunning = AtomicBoolean(true)
+    // Dedicated asynchronous pipelines
+    private lateinit var cameraExecutor: ExecutorService
+    private lateinit var faceExecutor: ExecutorService
+
+    private lateinit var detector: TfliteYoloDetector
+    private lateinit var depthEstimator: DepthEstimator
+    private lateinit var faceRecognitionManager: FaceRecognitionManager
+    private lateinit var decisionEngine: DecisionEngine
+    private lateinit var ocrManager: OcrManager
+    private lateinit var ttsManager: TtsManager
+    private lateinit var mjpegStreamReader: MjpegStreamReader
+
+    // Decoupled Frame Dispatch & Worker Loop
+    private val nextFrameId = AtomicLong(1L)
+    private val latestFrameRef = AtomicReference<FramePayload?>()
+    private val isAiRunning = AtomicBoolean(false)
     private var aiWorkerThread: Thread? = null
 
     // Asynchronous Face Recognition State (Runs parallel to YOLO, never blocks inference)
@@ -122,7 +125,7 @@ class MainActivity : AppCompatActivity() {
         faceExecutor = Executors.newSingleThreadExecutor()
 
         depthEstimator = DepthEstimator()
-        detector = TfliteYoloDetector(this, depthEstimator)
+        detector = TfliteYoloDetector(this)
         faceRecognitionManager = FaceRecognitionManager(this)
         decisionEngine = DecisionEngine()
         ocrManager = OcrManager()
@@ -134,15 +137,16 @@ class MainActivity : AppCompatActivity() {
                     runOnUiThread {
                         binding.esp32StreamView.setImageBitmap(bitmap)
                     }
-                    if (latestFrameRef.get() == null) {
-                        latestFrameRef.set(bitmap)
-                    }
+                    val frameId = nextFrameId.incrementAndGet()
+                    val payload = FramePayload(frameId, bitmap, SystemClock.elapsedRealtime())
+                    val old = latestFrameRef.getAndSet(payload)
+                    old?.bitmap?.recycle()
                 }
             },
             onStatusChanged = { status ->
                 runOnUiThread {
+                    binding.txtStreamStatus.visibility = View.VISIBLE
                     binding.txtStreamStatus.text = status
-                    binding.txtStreamStatus.visibility = if (status.isNotEmpty()) View.VISIBLE else View.GONE
                 }
             }
         )
@@ -152,8 +156,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         setupGestures()
-        setupActionButtons()
         setupTopBarControls()
+        setupActionButtons()
         startAiWorkerLoop()
 
         if (allPermissionsGranted()) {
@@ -171,9 +175,9 @@ class MainActivity : AppCompatActivity() {
         isAiRunning.set(true)
         aiWorkerThread = Thread({
             while (isAiRunning.get()) {
-                val frame = latestFrameRef.getAndSet(null)
-                if (frame != null) {
-                    processAiFrame(frame)
+                val payload = latestFrameRef.getAndSet(null)
+                if (payload != null) {
+                    processAiFrame(payload)
                     measureAiFps()
                 } else {
                     try {
@@ -190,11 +194,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun processAiFrame(bitmap: Bitmap) {
+    private fun processAiFrame(payload: FramePayload) {
+        val bitmap = payload.bitmap
+        val frameId = payload.frameId
         latestBitmap = bitmap
 
         // 1. Hardware Object Detection (YOLO26n 320x320 - zero-allocation pipeline)
-        val detections = detector.detect(bitmap)
+        val detections = detector.detect(bitmap, frameId)
         currentDetections = detections
 
         // 2. Asynchronous Face Recognition Dispatch (Throttled to 4.5 FPS + Track-Aware)
@@ -268,7 +274,7 @@ class MainActivity : AppCompatActivity() {
             binding.overlayView.faceDiagnostic = faceDiag
             binding.overlayView.faceScanMs = faceScanTimeMs
             binding.overlayView.registeredContactNames = registeredNames
-            binding.overlayView.updateResults(detections, event, liveObservations)
+            binding.overlayView.updateResults(detections, event, liveObservations, frameId)
         }
     }
 
@@ -341,7 +347,7 @@ class MainActivity : AppCompatActivity() {
         decisionEngine.reset()
         val url = prefs.getString(keyStreamUrl, defaultStreamUrl) ?: defaultStreamUrl
         mjpegStreamReader.start(url)
-        ttsManager.speak("Switched to external ESP 32 camera stream.", priority = 60, severity = "INFO")
+        ttsManager.speak("Switched to smart cap wireless camera.", priority = 60, severity = "INFO")
         Toast.makeText(this, "Connecting to ESP32: $url", Toast.LENGTH_SHORT).show()
     }
 
@@ -366,7 +372,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("ESP32-CAM Stream URL")
-            .setMessage("Enter the MJPEG stream URL of your ESP32-CAM (e.g. http://192.168.4.1:81/stream):")
+            .setMessage("Enter the MJPEG stream URL of your ESP32-CAM headwear:")
             .setView(input)
             .setPositiveButton("Save & Connect") { _, _ ->
                 val newUrl = input.text.toString().trim()
@@ -384,71 +390,28 @@ class MainActivity : AppCompatActivity() {
 
     private fun showFaceContactsDialog() {
         val contacts = faceRecognitionManager.getRegisteredContacts()
-
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(50, 30, 50, 10)
-        }
-
-        val headerText = TextView(this).apply {
-            text = "Registered Face Contacts (${contacts.size}):"
-            textSize = 15f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 0, 0, 12)
-        }
-        layout.addView(headerText)
-
-        if (contacts.isEmpty()) {
-            val emptyText = TextView(this).apply {
-                text = "No contacts enrolled yet.\nTap 'Enroll New Face' to save a friend or family member."
-                textSize = 13f
-                setTextColor(0xFF999999.toInt())
-                setPadding(0, 10, 0, 20)
-            }
-            layout.addView(emptyText)
+        val names = if (contacts.isEmpty()) {
+            "No contacts enrolled yet.\n\nEnroll a face to hear names spoken automatically when friends or family appear."
         } else {
-            val dateFormat = SimpleDateFormat("MMM d, yyyy", Locale.getDefault())
-            for (contact in contacts) {
-                val row = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    setPadding(0, 8, 0, 8)
-                    gravity = android.view.Gravity.CENTER_VERTICAL
-                }
+            contacts.mapIndexed { idx, c -> "${idx + 1}. ${c.name}" }.joinToString("\n")
+        }
 
-                val info = TextView(this).apply {
-                    text = "👤 ${contact.name} (${dateFormat.format(Date(contact.enrolledTimestamp))})"
-                    textSize = 14f
-                    setTextColor(0xFF00FFCC.toInt())
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                }
-
-                val delBtn = android.widget.Button(this).apply {
-                    text = "Delete"
-                    textSize = 11f
-                    setBackgroundColor(0xFF882222.toInt())
-                    setTextColor(0xFFFFFFFF.toInt())
-                    setOnClickListener {
-                        faceRecognitionManager.deleteContact(contact.id)
-                        Toast.makeText(this@MainActivity, "Deleted ${contact.name}", Toast.LENGTH_SHORT).show()
-                        showFaceContactsDialog()
-                    }
-                }
-
-                row.addView(info)
-                row.addView(delBtn)
-                layout.addView(row)
-            }
+        val layout = TextView(this).apply {
+            text = names
+            textSize = 16f
+            setPadding(40, 20, 40, 20)
         }
 
         AlertDialog.Builder(this)
-            .setTitle("Face Identification")
+            .setTitle("Registered Faces (${contacts.size})")
             .setView(layout)
             .setPositiveButton("Enroll New Face") { _, _ ->
                 promptEnrollNewFace()
             }
             .setNeutralButton("Clear All") { _, _ ->
                 faceRecognitionManager.clearAllContacts()
+                decisionEngine.reset()
+                activeRecognizedFaces.set(emptyList())
                 Toast.makeText(this, "Cleared all face contacts", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Close", null)
@@ -606,7 +569,10 @@ class MainActivity : AppCompatActivity() {
         try {
             val bitmap = imageProxyToBitmap(imageProxy)
             if (bitmap != null) {
-                latestFrameRef.set(bitmap)
+                val frameId = nextFrameId.incrementAndGet()
+                val payload = FramePayload(frameId, bitmap, SystemClock.elapsedRealtime())
+                val old = latestFrameRef.getAndSet(payload)
+                old?.bitmap?.recycle()
             }
         } catch (e: Exception) {
             Log.e(tag, "Error extracting image frame: ${e.message}")

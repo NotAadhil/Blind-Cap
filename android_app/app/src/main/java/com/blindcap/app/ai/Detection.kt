@@ -1,4 +1,4 @@
-package com.blindcap.app.ai
+﻿package com.blindcap.app.ai
 
 import android.graphics.RectF
 
@@ -10,5 +10,6 @@ data class Detection(
     val center: Pair<Float, Float>, // Normalized center point (cx, cy)
     val areaRatio: Float,
     val region: String = "center", // "left", "center", "right"
-    var estimatedDistanceM: Float = 2.5f
+    var estimatedDistanceM: Float = 2.5f,
+    val frameId: Long = 0L
 )

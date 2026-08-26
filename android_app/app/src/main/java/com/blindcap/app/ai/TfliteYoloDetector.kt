@@ -10,7 +10,6 @@ import android.os.SystemClock
 import android.util.Log
 import com.blindcap.app.engine.DepthEstimator
 import org.tensorflow.lite.Interpreter
-import org.tensorflow.lite.gpu.GpuDelegate
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
@@ -29,26 +28,27 @@ data class DetectionTimings(
 
 class TfliteYoloDetector(
     private val context: Context,
-    private val depthEstimator: DepthEstimator,
-    private val modelFileName: String = "yolo.tflite",
-    private val labelsFileName: String = "labels.txt"
+    private val modelFileName: String = "yolo26n_320_float32.tflite",
+    private val labelsFileName: String = "coco_labels.txt",
+    private val confThreshold: Float = 0.35f,
+    private val iouThreshold: Float = 0.45f
 ) {
 
-    private val tag = "Yolo26nTflite"
+    private val tag = "TfliteYoloDetector"
     private var interpreter: Interpreter? = null
-    private var gpuDelegate: GpuDelegate? = null
     private val labels = mutableListOf<String>()
 
     val inputSize = 320
-    var confThreshold: Float = 0.30f // Configurable baseline confidence threshold
+    private val depthEstimator = DepthEstimator()
 
     var activeDevice: String = "Initializing..."
-    var lastTimings: DetectionTimings = DetectionTimings()
-    var lastError: String? = null
+        private set
 
-    // -----------------------------------------------------------------------
-    // Pre-allocated reusable resources - zero heap allocations inside detect()
-    // -----------------------------------------------------------------------
+    var lastTimings: DetectionTimings = DetectionTimings()
+        private set
+
+    var lastError: String? = null
+        private set
 
     // Direct ByteBuffer for Float32 tensor [1, 320, 320, 3] = 1 * 320 * 320 * 3 * 4 = 1,228,800 bytes
     private val inputByteBuffer: ByteBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
@@ -88,7 +88,7 @@ class TfliteYoloDetector(
             Log.i(tag, "Loaded ${labels.size} COCO class labels")
         } catch (e: Exception) {
             lastError = "Label load: ${e.message}"
-            Log.e(tag, "Error loading labels: ${e.message}", e)
+            Log.e(tag, "Failed to load labels: ${e.message}", e)
         }
     }
 
@@ -101,9 +101,6 @@ class TfliteYoloDetector(
                 rewind()
             }
 
-            // On Google Tensor G1 (Pixel 6a), CPU XNNPACK 4T (with dual Cortex-X1 @ 2.8GHz)
-            // runs at ~18ms sustained (55 FPS), whereas GPU Delegate has ~102ms texture copy overhead.
-            // Therefore, we use XNNPACK 4T as the primary ultra-fast execution engine.
             val cpuOptions = Interpreter.Options().apply {
                 setNumThreads(4)
                 setUseXNNPACK(true)
@@ -119,10 +116,10 @@ class TfliteYoloDetector(
 
     /**
      * Run detection on the provided bitmap.
-     * Reuses pre-allocated direct buffers to guarantee ZERO heap allocation in the hot loop.
-     * Returns detections with confidence >= (confThreshold * 0.70) for tracking state machine.
+     * Versioned with frameId to prevent asynchronous out-of-order stale application.
      */
-    fun detect(bitmap: Bitmap): List<Detection> {
+    @Synchronized
+    fun detect(bitmap: Bitmap, frameId: Long = 0L): List<Detection> {
         val interp = interpreter
         if (interp == null) {
             lastError = "Interpreter not initialized"
@@ -154,21 +151,33 @@ class TfliteYoloDetector(
             }
             val t1 = SystemClock.elapsedRealtimeNanos()
 
+            // CRITICAL REGRESSION FIX: Explicitly zero-out output buffer before inference
+            // Prevents previous frame detections from surviving when current frame has fewer objects!
+            val detections300 = outputBuffer[0]
+            for (i in 0 until 300) {
+                val row = detections300[i]
+                row[0] = 0f
+                row[1] = 0f
+                row[2] = 0f
+                row[3] = 0f
+                row[4] = 0f
+                row[5] = -1f
+            }
+
             // 2. Hardware inference into fixed pre-allocated outputBuffer
             interp.run(inputByteBuffer, outputBuffer)
             val t2 = SystemClock.elapsedRealtimeNanos()
 
             // 3. Postprocessing: filter and decode
             val minRawScore = (confThreshold * 0.70f).coerceAtLeast(0.20f)
-            val detections300 = outputBuffer[0]
             val invSize = 1.0f / inputSize.toFloat()
 
             for (i in 0 until 300) {
                 val row = detections300[i]
                 val score = row[4]
 
-                // Score gate FIRST - skip all remaining calculations for low-confidence slots
-                if (score < minRawScore) continue
+                // Score gate FIRST - skip all remaining calculations for low-confidence or zeroed slots
+                if (score < minRawScore || score.isNaN() || score <= 0f) continue
 
                 val classId = row[5].roundToInt()
                 if (classId !in labels.indices) continue
@@ -183,8 +192,8 @@ class TfliteYoloDetector(
                 val right = max(0f, min(1f, x2))
                 val bottom= max(0f, min(1f, y2))
 
-                // Skip degenerate bboxes
-                if (right <= left || bottom <= top) continue
+                // Skip degenerate or invalid bboxes
+                if (right <= left || bottom <= top || (right - left) < 0.01f || (bottom - top) < 0.01f) continue
 
                 val bbox = RectF(left, top, right, bottom)
                 val cx = (left + right) * 0.5f
@@ -204,7 +213,8 @@ class TfliteYoloDetector(
                         center = Pair(cx, cy),
                         areaRatio = areaRatio,
                         region = region,
-                        estimatedDistanceM = distanceM
+                        estimatedDistanceM = distanceM,
+                        frameId = frameId
                     )
                 )
             }
@@ -247,10 +257,7 @@ class TfliteYoloDetector(
         return copy[p95Idx]
     }
 
-    /**
-     * Intra-class Non-Maximum Suppression to remove redundant candidate boxes.
-     */
-    private fun applyNms(detections: List<Detection>, iouThreshold: Float = 0.45f): List<Detection> {
+    private fun applyNms(detections: List<Detection>): List<Detection> {
         if (detections.size <= 1) return detections
 
         val sorted = detections.sortedByDescending { it.confidence }
@@ -259,7 +266,7 @@ class TfliteYoloDetector(
         for (det in sorted) {
             var shouldKeep = true
             for (kept in selected) {
-                if (det.classId == kept.classId || (det.className.equals("person", true) && kept.className.equals("person", true))) {
+                if (det.classId == kept.classId) {
                     val iou = computeIoU(det.bbox, kept.bbox)
                     if (iou > iouThreshold) {
                         shouldKeep = false
@@ -293,7 +300,6 @@ class TfliteYoloDetector(
 
     fun close() {
         interpreter?.close()
-        gpuDelegate?.close()
         scaledBitmap.recycle()
     }
 }
