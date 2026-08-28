@@ -70,6 +70,13 @@ class OverlayView @JvmOverloads constructor(
         style = Paint.Style.FILL
     }
 
+    // Configurable HUD Visibility (Default: OFF for clean user interface)
+    var showDebugHud: Boolean = false
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     var cameraFps: Float = 0f
     var aiFps: Float = 0f
     var timings: DetectionTimings = DetectionTimings()
@@ -163,38 +170,40 @@ class OverlayView @JvmOverloads constructor(
             }
         }
 
-        // 4. Draw Performance Diagnostic HUD (Top Left)
-        val hudWidth = 460f
-        val hudHeight = 330f
-        val startX = 20f
-        val startY = 160f
+        // 4. Draw Performance Diagnostic HUD ONLY if enabled in Settings
+        if (showDebugHud) {
+            val hudWidth = 460f
+            val hudHeight = 330f
+            val startX = 20f
+            val startY = 160f
 
-        canvas.drawRoundRect(startX, startY, startX + hudWidth, startY + hudHeight, 16f, 16f, hudBgPaint)
+            canvas.drawRoundRect(startX, startY, startX + hudWidth, startY + hudHeight, 16f, 16f, hudBgPaint)
 
-        var yPos = startY + 34f
-        val lineGap = 34f
+            var yPos = startY + 34f
+            val lineGap = 34f
 
-        canvas.drawText("OCULUS AI TELEMETRY", startX + 16f, yPos, textPaint)
-        yPos += lineGap
-        canvas.drawText("Source: %.0f FPS  |  AI: %.1f FPS".format(cameraFps, aiFps), startX + 16f, yPos, textPaint)
-        yPos += lineGap
-        canvas.drawText("Lat: %.0fms (Pre:%.1f Inf:%.1f Post:%.1f)".format(
-            timings.totalMs, timings.preprocessMs, timings.inferenceMs, timings.postprocessMs
-        ), startX + 16f, yPos, smallTextPaint)
-        yPos += lineGap
-        canvas.drawText("P95 Latency: %.1fms  |  Backend: %s".format(timings.p95Ms, activeDevice), startX + 16f, yPos, smallTextPaint)
-        yPos += lineGap
-        val faceCountStr = if (validObservations.isNotEmpty()) " | Faces: ${validObservations.size}" else ""
-        canvas.drawText("Objects: ${detections.size}$faceCountStr | TTS: $ttsStatus", startX + 16f, yPos, smallTextPaint)
-        yPos += lineGap
+            canvas.drawText("OCULUS AI TELEMETRY", startX + 16f, yPos, textPaint)
+            yPos += lineGap
+            canvas.drawText("Source: %.0f FPS  |  AI: %.1f FPS".format(cameraFps, aiFps), startX + 16f, yPos, textPaint)
+            yPos += lineGap
+            canvas.drawText("Lat: %.0fms (Pre:%.1f Inf:%.1f Post:%.1f)".format(
+                timings.totalMs, timings.preprocessMs, timings.inferenceMs, timings.postprocessMs
+            ), startX + 16f, yPos, smallTextPaint)
+            yPos += lineGap
+            canvas.drawText("P95 Latency: %.1fms  |  Backend: %s".format(timings.p95Ms, activeDevice), startX + 16f, yPos, smallTextPaint)
+            yPos += lineGap
+            val faceCountStr = if (validObservations.isNotEmpty()) " | Faces: ${validObservations.size}" else ""
+            canvas.drawText("Objects: ${detections.size}$faceCountStr | TTS: $ttsStatus", startX + 16f, yPos, smallTextPaint)
+            yPos += lineGap
 
-        val faceMsStr = if (faceScanMs > 0f) " (%.0fms)".format(faceScanMs) else ""
-        val truncDiag = if (faceDiagnostic.length > 22) faceDiagnostic.take(22) + "..." else faceDiagnostic
-        canvas.drawText("Face AI: $truncDiag$faceMsStr", startX + 16f, yPos, smallTextPaint)
-        yPos += lineGap
+            val faceMsStr = if (faceScanMs > 0f) " (%.0fms)".format(faceScanMs) else ""
+            val truncDiag = if (faceDiagnostic.length > 22) faceDiagnostic.take(22) + "..." else faceDiagnostic
+            canvas.drawText("Face AI: $truncDiag$faceMsStr", startX + 16f, yPos, smallTextPaint)
+            yPos += lineGap
 
-        val statusText = errorMessage ?: (hazardEvent?.warningText ?: "Path clear (silent)")
-        val truncated = if (statusText.length > 28) statusText.take(28) + "..." else statusText
-        canvas.drawText("Event: $truncated", startX + 16f, yPos, smallTextPaint)
+            val statusText = errorMessage ?: (hazardEvent?.warningText ?: "Path clear (silent)")
+            val truncated = if (statusText.length > 28) statusText.take(28) + "..." else statusText
+            canvas.drawText("Event: $truncated", startX + 16f, yPos, smallTextPaint)
+        }
     }
 }

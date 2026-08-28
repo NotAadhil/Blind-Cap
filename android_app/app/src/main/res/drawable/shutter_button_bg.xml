@@ -1,0 +1,29 @@
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#44FFFFFF">
+    <item>
+        <layer-list>
+            <!-- Outer Ring -->
+            <item>
+                <shape android:shape="oval">
+                    <stroke
+                        android:width="4dp"
+                        android:color="#FFFFFFFF" />
+                    <solid android:color="#00000000" />
+                    <size
+                        android:width="76dp"
+                        android:height="76dp" />
+                </shape>
+            </item>
+            <!-- Inner Solid Shutter -->
+            <item
+                android:bottom="8dp"
+                android:left="8dp"
+                android:right="8dp"
+                android:top="8dp">
+                <shape android:shape="oval">
+                    <solid android:color="#E2E3DE" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+</ripple>

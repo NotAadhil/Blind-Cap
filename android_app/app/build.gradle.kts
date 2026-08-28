@@ -43,8 +43,14 @@ android {
         viewBinding = true
     }
 
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     androidResources {
-        noCompress.addAll(listOf("tflite", "onnx"))
+        noCompress.addAll(listOf("tflite"))
     }
 }
 
@@ -69,12 +75,13 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-gpu-api:2.14.0")
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
 
-    // ONNX Runtime Mobile
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
-
-    // Google ML Kit On-Device Text Recognition & Face Detection (Fast Offline Models)
+    // Google ML Kit On-Device Vision (OCR, Face Detection, Barcode Scanning)
     implementation("com.google.mlkit:text-recognition:16.0.0")
     implementation("com.google.mlkit:face-detection:16.1.6")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
+    // Google Play Services Location for SOS GPS
+    implementation("com.google.android.gms:play-services-location:21.2.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")

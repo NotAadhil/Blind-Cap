@@ -31,6 +31,7 @@ models/**/*.yaml
 
 # Export staging directories
 yolo*_openvino_model/
+yolo*_tflite*/
 
 # Pytest & Testing
 .pytest_cache/

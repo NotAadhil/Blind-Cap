@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#1C1B1F"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="What would you like to use?"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:paddingBottom="8dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Select your desired assistance mode for this session:"
+        android:textColor="#CAC4D0"
+        android:textSize="14sp"
+        android:paddingBottom="20dp" />
+
+    <!-- Card 1: Object & Hazard Detection -->
+    <LinearLayout
+        android:id="@+id/cardOptionObjectNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@drawable/card_mode_bg"
+        android:padding="16dp"
+        android:layout_marginBottom="14dp"
+        android:clickable="true"
+        android:focusable="true">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🚶 Object &amp; Hazard Detection"
+            android:textColor="#00FFCC"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:paddingBottom="4dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Detect everyday objects, obstacles, walking corridor hazards, and recognize enrolled faces in real-time."
+            android:textColor="#E6E1E5"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- Card 2: Dedicated OCR Reader -->
+    <LinearLayout
+        android:id="@+id/cardOptionOcrReader"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@drawable/card_mode_bg"
+        android:padding="16dp"
+        android:layout_marginBottom="8dp"
+        android:clickable="true"
+        android:focusable="true">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📖 Dedicated OCR Text Reader"
+            android:textColor="#FFD700"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:paddingBottom="4dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Read printed text, medicine labels, signs, and documents on-demand with zero background object chatter."
+            android:textColor="#E6E1E5"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+</LinearLayout>

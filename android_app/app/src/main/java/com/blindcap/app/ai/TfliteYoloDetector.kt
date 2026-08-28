@@ -44,7 +44,7 @@ class TfliteYoloDetector(
     private val depthEstimator: DepthEstimator = DepthEstimator(),
     private val modelFileName: String = "yolo.tflite",
     private val labelsFileName: String = "labels.txt",
-    var confThreshold: Float = 0.30f,
+    var confThreshold: Float = 0.22f,
     private val iouThreshold: Float = 0.45f
 ) {
 
@@ -153,10 +153,6 @@ class TfliteYoloDetector(
         }
     }
 
-    /**
-     * Run detection on the provided bitmap.
-     * Guaranteed clean execution with output buffer memory zeroing.
-     */
     @Synchronized
     fun detect(bitmap: Bitmap): List<Detection> {
         val interp = interpreter
@@ -170,13 +166,10 @@ class TfliteYoloDetector(
         val rawDetections = ArrayList<Detection>(16)
 
         try {
-            // 1. Preprocessing: load and normalize into TensorImage
             tensorImage.load(bitmap)
             val processedImage = imageProcessor.process(tensorImage)
             val t1 = SystemClock.elapsedRealtimeNanos()
 
-            // CRITICAL REGRESSION FIX: Explicitly zero-out output buffer before inference
-            // Prevents previous frame detections from surviving when current frame has fewer objects!
             val detections300 = outputBuffer[0]
             for (i in 0 until 300) {
                 val row = detections300[i]
@@ -188,19 +181,16 @@ class TfliteYoloDetector(
                 row[5] = -1f
             }
 
-            // 2. Hardware inference into fixed pre-allocated outputBuffer
             interp.run(processedImage.buffer, outputBuffer)
             val t2 = SystemClock.elapsedRealtimeNanos()
 
-            // 3. Postprocessing: filter and decode
-            val minRawScore = (confThreshold * 0.70f).coerceAtLeast(0.18f)
+            val minRawScore = 0.15f
             val invSize = 1.0f / inputSize.toFloat()
 
             for (i in 0 until 300) {
                 val row = detections300[i]
                 val score = row[4]
 
-                // Score gate FIRST - skip all remaining calculations for low-confidence or zeroed slots
                 if (score < minRawScore || score.isNaN() || score <= 0f) continue
 
                 val classId = row[5].roundToInt()
@@ -216,7 +206,6 @@ class TfliteYoloDetector(
                 val right = max(0f, min(1f, x2))
                 val bottom= max(0f, min(1f, y2))
 
-                // Skip degenerate bboxes
                 if (right <= left || bottom <= top) continue
 
                 val bbox = RectF(left, top, right, bottom)
@@ -245,7 +234,6 @@ class TfliteYoloDetector(
             val t3 = SystemClock.elapsedRealtimeNanos()
             val totalFrameMs = (t3 - t0) / 1_000_000f
 
-            // Record latency history for rolling P95
             latencyHistory[latencyIndex] = totalFrameMs
             latencyIndex = (latencyIndex + 1) % latencyHistory.size
             if (latencyCount < latencyHistory.size) latencyCount++
@@ -261,8 +249,7 @@ class TfliteYoloDetector(
             )
             lastError = null
 
-            val finalDetections = applyNms(rawDetections)
-            return finalDetections
+            return applyNms(rawDetections)
 
         } catch (e: Exception) {
             lastError = "TFLite inference: ${e.javaClass.simpleName}: ${e.message}"
