@@ -140,7 +140,7 @@ class TtsManager(
 
             // Validate generation ID, active mode, and age
             val isGenValid = next.generationId == currentGeneration.get()
-            val isModeValid = next.mode == TtsMode.SYSTEM || next.mode == activeMode
+            val isModeValid = next.mode == TtsMode.SYSTEM || next.mode == TtsMode.VOICE_ASSISTANT || next.mode == activeMode || next.priority >= 80
             val isFresh = age <= next.maxAgeMs
 
             if (isGenValid && isModeValid && isFresh) {
@@ -264,9 +264,10 @@ class TtsManager(
             return
         }
 
-        // 2. Active Mode Check (Speech must belong to current active mode or SYSTEM)
-        if (mode != TtsMode.SYSTEM && mode != activeMode) {
-            Log.d(tag, "Discarded speech from inactive mode ($mode != $activeMode): '$trimmed'")
+        // 2. Active Mode Check: SYSTEM, VOICE_ASSISTANT, and on-demand user actions (priority >= 80) are ALWAYS allowed!
+        val isAllowed = (mode == TtsMode.SYSTEM || mode == TtsMode.VOICE_ASSISTANT || mode == activeMode || priority >= 80)
+        if (!isAllowed) {
+            Log.d(tag, "Discarded speech from inactive mode ($mode != $activeMode, priority=$priority): '$trimmed'")
             return
         }
 

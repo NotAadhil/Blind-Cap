@@ -33,6 +33,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.blindcap.app.audio.SoundEffectManager
 import com.blindcap.app.ai.ColorDetector
 import com.blindcap.app.ai.CurrencyDetector
 import com.blindcap.app.ai.Detection
@@ -215,16 +216,42 @@ class MainActivity : AppCompatActivity() {
                         binding.txtVoiceStatus.text = msg
                         binding.txtModeStatus.text = "🎤 $msg"
                     } else {
-                        binding.voiceAssistantOverlay.visibility = View.GONE
-                        updateCarouselUi()
+                        if (binding.layoutVoiceResult.visibility != View.VISIBLE) {
+                            binding.voiceAssistantOverlay.visibility = View.GONE
+                            updateCarouselUi()
+                        }
                     }
                 }
             }
         )
 
         binding.btnCancelVoice.setOnClickListener {
+            SoundEffectManager.playVoiceCloseChime()
             voiceCommandManager.cancel()
             binding.voiceAssistantOverlay.visibility = View.GONE
+            binding.layoutVoiceResult.visibility = View.GONE
+            updateCarouselUi()
+        }
+
+        binding.chipVoiceColor.setOnClickListener {
+            hapticManager.vibrateClick()
+            handleVoiceCommand(VoiceCommand(VoiceCommandType.COLOR_QUERY, "what color is this"))
+        }
+        binding.chipVoiceCurrency.setOnClickListener {
+            hapticManager.vibrateClick()
+            handleVoiceCommand(VoiceCommand(VoiceCommandType.CURRENCY_QUERY, "what note is this"))
+        }
+        binding.chipVoiceScene.setOnClickListener {
+            hapticManager.vibrateClick()
+            handleVoiceCommand(VoiceCommand(VoiceCommandType.SCENE_QUERY, "describe scene"))
+        }
+        binding.chipVoiceOcr.setOnClickListener {
+            hapticManager.vibrateClick()
+            handleVoiceCommand(VoiceCommand(VoiceCommandType.OCR_QUERY, "read text"))
+        }
+        binding.chipVoiceBarcode.setOnClickListener {
+            hapticManager.vibrateClick()
+            handleVoiceCommand(VoiceCommand(VoiceCommandType.BARCODE_QUERY, "scan barcode"))
         }
 
         // Apply saved debug HUD preference
@@ -361,26 +388,76 @@ class MainActivity : AppCompatActivity() {
     private fun showEsp32ConfigDialog() {
         hapticManager.vibrateClick()
         val currentUrl = prefs.getString(keyStreamUrl, defaultStreamUrl) ?: defaultStreamUrl
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 16)
+        }
+
+        val msgTv = TextView(this).apply {
+            text = "Enter your ESP32-CAM IP address or stream URL. The app will auto-probe all camera ports (81, 80, /stream, /capture):"
+            setTextColor(0xFFCAC4D0.toInt())
+            textSize = 13f
+            setPadding(0, 0, 0, 16)
+        }
+
         val input = EditText(this).apply {
             setText(currentUrl)
             setSelection(text.length)
             hint = "192.168.4.1 or http://192.168.4.1:81/stream"
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFF2B2930.toInt())
+            setPadding(24, 20, 24, 20)
         }
 
+        // Quick Preset Buttons: 192.168.4.1 (AP) | 192.168.1.x (Router Wi-Fi)
+        val presetLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 16, 0, 8)
+        }
+
+        val btnApPreset = Button(this).apply {
+            text = "AP: 192.168.4.1"
+            textSize = 11f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                setMargins(0, 0, 8, 0)
+            }
+            setOnClickListener {
+                input.setText("http://192.168.4.1:81/stream")
+                input.setSelection(input.text.length)
+            }
+        }
+
+        val btnHomePreset = Button(this).apply {
+            text = "Home Wi-Fi Auto"
+            textSize = 11f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                input.setText("http://192.168.1.184:81/stream")
+                input.setSelection(input.text.length)
+            }
+        }
+
+        presetLayout.addView(btnApPreset)
+        presetLayout.addView(btnHomePreset)
+
+        container.addView(msgTv)
+        container.addView(input)
+        container.addView(presetLayout)
+
         AlertDialog.Builder(this)
-            .setTitle("ESP32-CAM Stream IP / URL")
-            .setMessage("Enter the IP address or stream URL of your ESP32-CAM:\n\nDefault AP: 192.168.4.1:81\nDefault Stream: http://192.168.4.1:81/stream")
-            .setView(input)
-            .setPositiveButton("Connect") { _, _ ->
+            .setTitle("🧢 ESP32-CAM Setup & Auto-Connect")
+            .setView(container)
+            .setPositiveButton("Connect & Stream") { _, _ ->
                 val rawInput = input.text.toString().trim()
                 val normalized = MjpegStreamReader.normalizeStreamUrl(rawInput)
                 prefs.edit().putString(keyStreamUrl, normalized).apply()
                 hapticManager.vibrateClick()
-                Toast.makeText(this, "Connecting to: $normalized", Toast.LENGTH_LONG).show()
-                ttsManager.speak("Connecting to ESP32.", priority = 70, severity = "INFO", mode = TtsMode.SYSTEM)
+                Toast.makeText(this, "Connecting & auto-probing: $normalized", Toast.LENGTH_LONG).show()
+                ttsManager.speak("Connecting to ESP32 smart cap.", priority = 75, severity = "INFO", mode = TtsMode.SYSTEM)
                 setVideoInputSource(VideoInputSource.ESP32_CAM, announce = false)
             }
-            .setNeutralButton("Switch to Phone") { _, _ ->
+            .setNeutralButton("Use Phone Camera") { _, _ ->
                 setVideoInputSource(VideoInputSource.PHONE_CAMERA, announce = true)
             }
             .setNegativeButton("Cancel", null)
@@ -1105,46 +1182,132 @@ class MainActivity : AppCompatActivity() {
         Toast.makeText(this, summary, Toast.LENGTH_LONG).show()
     }
 
+    private fun showVoiceAssistantResult(title: String, body: String, speakText: String = body) {
+        SoundEffectManager.playVoiceCloseChime()
+        runOnUiThread {
+            binding.voiceAssistantOverlay.visibility = View.VISIBLE
+            binding.txtVoiceStatus.text = "Assistant Response"
+            binding.layoutVoiceResult.visibility = View.VISIBLE
+            binding.txtVoiceResultTitle.text = title
+            binding.txtVoiceResultBody.text = body
+
+            ttsManager.speak(
+                text = speakText,
+                priority = 90,
+                severity = "INFO",
+                mode = TtsMode.VOICE_ASSISTANT
+            )
+
+            // Auto-dismiss after 4.5 seconds
+            mainHandler.postDelayed({
+                if (binding.voiceAssistantOverlay.visibility == View.VISIBLE) {
+                    binding.voiceAssistantOverlay.visibility = View.GONE
+                    binding.layoutVoiceResult.visibility = View.GONE
+                    updateCarouselUi()
+                }
+            }, 4500L)
+        }
+    }
+
     private fun handleVoiceCommand(command: VoiceCommand) {
         Log.i(tag, "Voice command received: type=${command.type}, text='${command.rawText}'")
         hapticManager.vibrateClick()
-        binding.voiceAssistantOverlay.visibility = View.GONE
+
+        runOnUiThread {
+            binding.voiceAssistantOverlay.visibility = View.VISIBLE
+            binding.txtVoiceStatus.text = "Processing..."
+            binding.txtVoiceTranscription.text = "“${command.rawText}”"
+        }
 
         when (command.type) {
             VoiceCommandType.COLOR_QUERY -> {
-                triggerColorDetection()
+                val bitmap = latestBitmap
+                if (bitmap == null || bitmap.isRecycled) {
+                    showVoiceAssistantResult("🎨 Color Detector", "Camera initializing. Point camera at surface.")
+                    return
+                }
+                lifecycleScope.launch(Dispatchers.Default) {
+                    val result = colorDetector.detectColor(bitmap)
+                    withContext(Dispatchers.Main) {
+                        showVoiceAssistantResult("🎨 Color Detector", result.spokenDescription)
+                    }
+                }
             }
             VoiceCommandType.CURRENCY_QUERY -> {
-                triggerCurrencyScan()
+                val bitmap = latestBitmap
+                if (bitmap == null || bitmap.isRecycled) {
+                    showVoiceAssistantResult("💵 Banknote Reader", "Camera initializing. Hold banknote in front of camera.")
+                    return
+                }
+                lifecycleScope.launch(Dispatchers.Default) {
+                    val result = currencyDetector.detectCurrency(bitmap)
+                    withContext(Dispatchers.Main) {
+                        showVoiceAssistantResult("💵 Banknote Reader", result.spokenText)
+                    }
+                }
             }
             VoiceCommandType.SCENE_QUERY -> {
-                triggerSceneSummary()
+                val summary = decisionEngine.getFullSceneSummary(currentDetections)
+                showVoiceAssistantResult("👁️ Scene Summary", summary)
             }
             VoiceCommandType.OCR_QUERY -> {
-                triggerOcrReading()
+                val bitmap = latestBitmap
+                if (bitmap == null || bitmap.isRecycled) {
+                    showVoiceAssistantResult("📖 OCR Reader", "Camera initializing. Please wait.")
+                    return
+                }
+                lifecycleScope.launch(Dispatchers.Default) {
+                    try {
+                        val text = ocrManager.extractText(bitmap)
+                        withContext(Dispatchers.Main) {
+                            showVoiceAssistantResult("📖 OCR Text Reader", text)
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            showVoiceAssistantResult("📖 OCR Reader", "Could not read text clearly.")
+                        }
+                    }
+                }
             }
             VoiceCommandType.BARCODE_QUERY -> {
-                triggerBarcodeScan()
+                val bitmap = latestBitmap
+                if (bitmap == null || bitmap.isRecycled) {
+                    showVoiceAssistantResult("📦 Barcode Scanner", "Camera initializing. Align barcode.")
+                    return
+                }
+                lifecycleScope.launch(Dispatchers.Default) {
+                    val result = barcodeScannerManager.scanBitmap(bitmap)
+                    withContext(Dispatchers.Main) {
+                        val msg = result?.spokenText ?: "No barcode or QR code detected in view."
+                        showVoiceAssistantResult("📦 Barcode Scanner", msg)
+                    }
+                }
             }
             VoiceCommandType.FACE_QUERY -> {
                 val known = activeRecognizedFaces.get().filter { it.isKnown }
-                if (known.isNotEmpty()) {
+                val msg = if (known.isNotEmpty()) {
                     val names = known.joinToString(", ") { it.name ?: "" }
-                    ttsManager.speak("Identified: $names in front of you.", priority = 85, severity = "INFO", mode = TtsMode.FACE)
+                    "Identified: $names in front of you."
                 } else {
-                    ttsManager.speak("No registered faces recognized.", priority = 75, severity = "INFO", mode = TtsMode.FACE)
+                    "No registered faces recognized in camera view."
                 }
+                showVoiceAssistantResult("👤 Face Recognition", msg)
             }
             VoiceCommandType.SOS_QUERY -> {
+                binding.voiceAssistantOverlay.visibility = View.GONE
                 sosManager.triggerEmergencySos { _, msg ->
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                 }
             }
             VoiceCommandType.STOP_SPEECH -> {
+                binding.voiceAssistantOverlay.visibility = View.GONE
                 stopSpeech()
             }
             VoiceCommandType.UNKNOWN -> {
-                ttsManager.speak("You can ask for color, note, describe scene, read text, or scan barcode.", priority = 70, severity = "INFO", mode = TtsMode.VOICE_ASSISTANT)
+                showVoiceAssistantResult(
+                    "🎙️ Voice Assistant",
+                    "Ask: 'What color is this', 'What note is this', 'Describe scene', or 'Read text'."
+                )
             }
         }
     }
@@ -1260,12 +1423,15 @@ class MainActivity : AppCompatActivity() {
                     Log.i(tag, "Volume UP pressed -> Activating Voice Assistant")
                     ttsManager.stop()
                     hapticManager.vibrateClick()
+                    SoundEffectManager.playVoiceOpenChime()
 
                     val voiceEnabled = prefs.getBoolean(keyVoiceCommands, true)
                     if (voiceEnabled) {
                         runOnUiThread {
                             binding.voiceAssistantOverlay.visibility = View.VISIBLE
+                            binding.layoutVoiceResult.visibility = View.GONE
                             binding.txtVoiceStatus.text = "Listening... Speak now"
+                            binding.txtVoiceTranscription.text = "Speak: 'What color is this', 'What note is this', 'Describe scene'..."
                             binding.txtModeStatus.text = "🎤 Listening..."
                         }
                         voiceCommandManager.startListening()
