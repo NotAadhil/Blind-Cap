@@ -38,7 +38,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="🚶 Object &amp; Hazard Detection"
+            android:text="Object &amp; Hazard Detection"
             android:textColor="#00FFCC"
             android:textSize="18sp"
             android:textStyle="bold"
@@ -67,7 +67,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="📖 Dedicated OCR Text Reader"
+            android:text="Dedicated OCR Text Reader"
             android:textColor="#FFD700"
             android:textSize="18sp"
             android:textStyle="bold"

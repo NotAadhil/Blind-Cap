@@ -1,4 +1,4 @@
-﻿package com.blindcap.app.ui
+package com.blindcap.app.ui
 
 import android.content.Context
 import android.graphics.Canvas
@@ -155,7 +155,7 @@ class OverlayView @JvmOverloads constructor(
                 facePaint.color = Color.parseColor("#00FFFF")
                 canvas.drawRect(left, top, right, bottom, facePaint)
 
-                val label = "👤 ${obs.identity.uppercase()}"
+                val label = obs.identity.uppercase()
                 canvas.drawText(label, left + 4f, max(top - 8f, 25f), faceTextPaint)
             } else if (obs.isFacingUser) {
                 // Unknown Face Looking Directly at User: Gold Box

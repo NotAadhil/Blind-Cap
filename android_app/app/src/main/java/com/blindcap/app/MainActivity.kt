@@ -214,7 +214,7 @@ class MainActivity : AppCompatActivity() {
                     if (isListening) {
                         binding.voiceAssistantOverlay.visibility = View.VISIBLE
                         binding.txtVoiceStatus.text = msg
-                        binding.txtModeStatus.text = "🎤 $msg"
+                        binding.txtModeStatus.text = "$msg"
                     } else {
                         if (binding.layoutVoiceResult.visibility != View.VISIBLE) {
                             binding.voiceAssistantOverlay.visibility = View.GONE
@@ -271,7 +271,7 @@ class MainActivity : AppCompatActivity() {
             onStatusChanged = { status ->
                 runOnUiThread {
                     if (currentSource == VideoInputSource.ESP32_CAM) {
-                        binding.txtSourceBadge.text = "🧢 $status"
+                        binding.txtSourceBadge.text = "ESP32: $status"
                     }
                 }
             }
@@ -353,7 +353,7 @@ class MainActivity : AppCompatActivity() {
 
         if (source == VideoInputSource.ESP32_CAM) {
             prefs.edit().putBoolean(keyVideoSource, false).apply()
-            binding.txtSourceBadge.text = "🧢 ESP32: Connecting..."
+            binding.txtSourceBadge.text = "ESP32: Connecting..."
             binding.viewFinder.visibility = View.GONE
             binding.esp32StreamView.visibility = View.VISIBLE
 
@@ -371,7 +371,7 @@ class MainActivity : AppCompatActivity() {
             }
         } else {
             prefs.edit().putBoolean(keyVideoSource, true).apply()
-            binding.txtSourceBadge.text = "📱 Phone"
+            binding.txtSourceBadge.text = "Phone Camera"
             binding.esp32StreamView.visibility = View.GONE
             binding.viewFinder.visibility = View.VISIBLE
 
@@ -446,7 +446,7 @@ class MainActivity : AppCompatActivity() {
         container.addView(presetLayout)
 
         AlertDialog.Builder(this)
-            .setTitle("🧢 ESP32-CAM Setup & Auto-Connect")
+            .setTitle("ESP32-CAM Setup & Auto-Connect")
             .setView(container)
             .setPositiveButton("Connect & Stream") { _, _ ->
                 val rawInput = input.text.toString().trim()
@@ -699,7 +699,7 @@ class MainActivity : AppCompatActivity() {
                     }
 
                     val nameTv = TextView(this).apply {
-                        text = "👤 ${contact.name}"
+                        text = contact.name
                         setTextColor(0xFFFFFFFF.toInt())
                         textSize = 15f
                         setTypeface(null, android.graphics.Typeface.BOLD)
@@ -759,7 +759,7 @@ class MainActivity : AppCompatActivity() {
                 val result = faceRecognitionManager.registerFaceFromBitmap(name, bitmap)
                 withContext(Dispatchers.Main) {
                     btnCapture.isEnabled = true
-                    btnCapture.text = "📸 Capture & Enroll Face"
+                    btnCapture.text = "Capture & Enroll Face"
 
                     result.onSuccess { contact ->
                         hapticManager.vibrateClick()
@@ -1223,48 +1223,48 @@ class MainActivity : AppCompatActivity() {
             VoiceCommandType.COLOR_QUERY -> {
                 val bitmap = latestBitmap
                 if (bitmap == null || bitmap.isRecycled) {
-                    showVoiceAssistantResult("🎨 Color Detector", "Camera initializing. Point camera at surface.")
+                    showVoiceAssistantResult("Color Detector", "Camera initializing. Point camera at surface.")
                     return
                 }
                 lifecycleScope.launch(Dispatchers.Default) {
                     val result = colorDetector.detectColor(bitmap)
                     withContext(Dispatchers.Main) {
-                        showVoiceAssistantResult("🎨 Color Detector", result.spokenDescription)
+                        showVoiceAssistantResult("Color Detector", result.spokenDescription)
                     }
                 }
             }
             VoiceCommandType.CURRENCY_QUERY -> {
                 val bitmap = latestBitmap
                 if (bitmap == null || bitmap.isRecycled) {
-                    showVoiceAssistantResult("💵 Banknote Reader", "Camera initializing. Hold banknote in front of camera.")
+                    showVoiceAssistantResult("Banknote Reader", "Camera initializing. Hold banknote in front of camera.")
                     return
                 }
                 lifecycleScope.launch(Dispatchers.Default) {
                     val result = currencyDetector.detectCurrency(bitmap)
                     withContext(Dispatchers.Main) {
-                        showVoiceAssistantResult("💵 Banknote Reader", result.spokenText)
+                        showVoiceAssistantResult("Banknote Reader", result.spokenText)
                     }
                 }
             }
             VoiceCommandType.SCENE_QUERY -> {
                 val summary = decisionEngine.getFullSceneSummary(currentDetections)
-                showVoiceAssistantResult("👁️ Scene Summary", summary)
+                showVoiceAssistantResult("Scene Summary", summary)
             }
             VoiceCommandType.OCR_QUERY -> {
                 val bitmap = latestBitmap
                 if (bitmap == null || bitmap.isRecycled) {
-                    showVoiceAssistantResult("📖 OCR Reader", "Camera initializing. Please wait.")
+                    showVoiceAssistantResult("OCR Reader", "Camera initializing. Please wait.")
                     return
                 }
                 lifecycleScope.launch(Dispatchers.Default) {
                     try {
                         val text = ocrManager.extractText(bitmap)
                         withContext(Dispatchers.Main) {
-                            showVoiceAssistantResult("📖 OCR Text Reader", text)
+                            showVoiceAssistantResult("OCR Text Reader", text)
                         }
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) {
-                            showVoiceAssistantResult("📖 OCR Reader", "Could not read text clearly.")
+                            showVoiceAssistantResult("OCR Reader", "Could not read text clearly.")
                         }
                     }
                 }
@@ -1272,14 +1272,14 @@ class MainActivity : AppCompatActivity() {
             VoiceCommandType.BARCODE_QUERY -> {
                 val bitmap = latestBitmap
                 if (bitmap == null || bitmap.isRecycled) {
-                    showVoiceAssistantResult("📦 Barcode Scanner", "Camera initializing. Align barcode.")
+                    showVoiceAssistantResult("Barcode Scanner", "Camera initializing. Align barcode.")
                     return
                 }
                 lifecycleScope.launch(Dispatchers.Default) {
                     val result = barcodeScannerManager.scanBitmap(bitmap)
                     withContext(Dispatchers.Main) {
                         val msg = result?.spokenText ?: "No barcode or QR code detected in view."
-                        showVoiceAssistantResult("📦 Barcode Scanner", msg)
+                        showVoiceAssistantResult("Barcode Scanner", msg)
                     }
                 }
             }
@@ -1291,7 +1291,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     "No registered faces recognized in camera view."
                 }
-                showVoiceAssistantResult("👤 Face Recognition", msg)
+                showVoiceAssistantResult("Face Recognition", msg)
             }
             VoiceCommandType.SOS_QUERY -> {
                 binding.voiceAssistantOverlay.visibility = View.GONE
@@ -1305,7 +1305,7 @@ class MainActivity : AppCompatActivity() {
             }
             VoiceCommandType.UNKNOWN -> {
                 showVoiceAssistantResult(
-                    "🎙️ Voice Assistant",
+                    "Voice Assistant",
                     "Ask: 'What color is this', 'What note is this', 'Describe scene', or 'Read text'."
                 )
             }
@@ -1432,7 +1432,7 @@ class MainActivity : AppCompatActivity() {
                             binding.layoutVoiceResult.visibility = View.GONE
                             binding.txtVoiceStatus.text = "Listening... Speak now"
                             binding.txtVoiceTranscription.text = "Speak: 'What color is this', 'What note is this', 'Describe scene'..."
-                            binding.txtModeStatus.text = "🎤 Listening..."
+                            binding.txtModeStatus.text = "Listening..."
                         }
                         voiceCommandManager.startListening()
                     } else {

@@ -38,7 +38,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="👤"
+            android:text="Face"
             android:textSize="28sp"
             android:paddingEnd="16dp" />
 
@@ -79,7 +79,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="💰"
+            android:text="Note"
             android:textSize="28sp"
             android:paddingEnd="16dp" />
 
@@ -120,7 +120,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="🎨"
+            android:text="Color"
             android:textSize="28sp"
             android:paddingEnd="16dp" />
 
@@ -161,7 +161,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="🏷️"
+            android:text="Code"
             android:textSize="28sp"
             android:paddingEnd="16dp" />
 

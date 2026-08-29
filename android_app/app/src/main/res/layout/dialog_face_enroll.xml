@@ -19,7 +19,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="👤 Face Recognition"
+            android:text="Face Recognition"
             android:textColor="#FFFFFF"
             android:textSize="20sp"
             android:textStyle="bold" />
@@ -99,7 +99,7 @@
         android:id="@+id/btnCaptureFace"
         android:layout_width="match_parent"
         android:layout_height="52dp"
-        android:text="📸 Capture &amp; Enroll Face"
+        android:text="Capture &amp; Enroll Face"
         android:backgroundTint="#00FFCC"
         android:textColor="#1F2421"
         android:textSize="14sp"

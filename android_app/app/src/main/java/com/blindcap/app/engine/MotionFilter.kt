@@ -1,4 +1,4 @@
-﻿package com.blindcap.app.engine
+package com.blindcap.app.engine
 
 import java.util.ArrayDeque
 import kotlin.math.abs

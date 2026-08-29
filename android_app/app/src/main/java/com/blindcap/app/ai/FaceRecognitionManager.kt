@@ -1,4 +1,4 @@
-﻿package com.blindcap.app.ai
+package com.blindcap.app.ai
 
 import android.content.Context
 import android.graphics.Bitmap

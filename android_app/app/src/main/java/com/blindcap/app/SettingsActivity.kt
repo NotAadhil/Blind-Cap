@@ -193,7 +193,7 @@ class SettingsActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Registered Faces (${contacts.size})")
             .setView(layout)
-            .setPositiveButton("📸 Enroll on Camera") { _, _ ->
+            .setPositiveButton("Enroll on Camera") { _, _ ->
                 val intent = Intent(this, MainActivity::class.java).apply {
                     putExtra("open_face_enroll", true)
                     flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP

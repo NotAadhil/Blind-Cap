@@ -1,4 +1,4 @@
-﻿package com.blindcap.app.ai
+package com.blindcap.app.ai
 
 import android.graphics.RectF
 import android.os.SystemClock
