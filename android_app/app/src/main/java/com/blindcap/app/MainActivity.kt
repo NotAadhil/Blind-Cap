@@ -51,6 +51,7 @@ import com.blindcap.app.net.MjpegStreamReader
 import com.blindcap.app.ocr.OcrManager
 import com.blindcap.app.safety.SosManager
 import com.blindcap.app.speech.TtsManager
+import com.blindcap.app.speech.TtsMode
 import com.blindcap.app.speech.VoiceCommand
 import com.blindcap.app.speech.VoiceCommandManager
 import com.blindcap.app.speech.VoiceCommandType
@@ -143,7 +144,17 @@ class MainActivity : AppCompatActivity() {
 
     // Tool Processing States & Debounce Guards
     private val isOcrProcessing = AtomicBoolean(false)
+    private val isCurrencyScanning = AtomicBoolean(false)
+    private val isColorScanning = AtomicBoolean(false)
+    private val isBarcodeScanning = AtomicBoolean(false)
     private var lastOcrRequestTime = 0L
+
+    // Button Debounce Timestamps
+    private var lastVolumeUpTapTime = 0L
+    private var lastVolumeDownTapTime = 0L
+    private var lastShutterTapTime = 0L
+    private var lastSceneSummaryTapTime = 0L
+    private var lastModeSwitchTapTime = 0L
 
     // Volume button tracking
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -187,7 +198,7 @@ class MainActivity : AppCompatActivity() {
         barcodeScannerManager = BarcodeScannerManager()
 
         ttsManager = TtsManager(this) {
-            ttsManager.speak("Oculus AI ready.", priority = 50, severity = "INFO")
+            ttsManager.speak("Oculus AI ready.", priority = 50, severity = "INFO", mode = TtsMode.SYSTEM)
         }
 
         sosManager = SosManager(this, ttsManager, hapticManager)
@@ -328,7 +339,7 @@ class MainActivity : AppCompatActivity() {
             mjpegStreamReader.start(streamUrl)
 
             if (announce) {
-                ttsManager.speak("Switched to ESP32 smart cap camera.", priority = 70, severity = "INFO")
+                ttsManager.speak("Switched to ESP32 smart cap camera.", priority = 70, severity = "INFO", mode = TtsMode.SYSTEM)
                 Toast.makeText(this, "ESP32 Stream: $streamUrl", Toast.LENGTH_LONG).show()
             }
         } else {
@@ -341,7 +352,7 @@ class MainActivity : AppCompatActivity() {
             startCamera()
 
             if (announce) {
-                ttsManager.speak("Switched to Phone camera.", priority = 70, severity = "INFO")
+                ttsManager.speak("Switched to Phone camera.", priority = 70, severity = "INFO", mode = TtsMode.SYSTEM)
                 Toast.makeText(this, "Phone Camera Active", Toast.LENGTH_SHORT).show()
             }
         }
@@ -366,7 +377,7 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit().putString(keyStreamUrl, normalized).apply()
                 hapticManager.vibrateClick()
                 Toast.makeText(this, "Connecting to: $normalized", Toast.LENGTH_LONG).show()
-                ttsManager.speak("Connecting to ESP32.", priority = 70, severity = "INFO")
+                ttsManager.speak("Connecting to ESP32.", priority = 70, severity = "INFO", mode = TtsMode.SYSTEM)
                 setVideoInputSource(VideoInputSource.ESP32_CAM, announce = false)
             }
             .setNeutralButton("Switch to Phone") { _, _ ->
@@ -438,6 +449,9 @@ class MainActivity : AppCompatActivity() {
     private fun processAiFrame(bitmap: Bitmap) {
         if (bitmap.isRecycled) return
 
+        // Capture current generation ID before inference
+        val genId = ttsManager.getGenerationId()
+
         val detections = detector.detect(bitmap)
         currentDetections = detections
 
@@ -494,12 +508,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Dispatch speech if warranted
+        // Dispatch speech with mode tagging and generation token validation
         if (event.warningText != null) {
             ttsManager.speak(
                 text = event.warningText,
                 priority = event.speakPriority,
-                severity = event.severity
+                severity = event.severity,
+                mode = TtsMode.OBJECT_DETECTION,
+                generationId = genId
             )
         }
 
@@ -628,7 +644,7 @@ class MainActivity : AppCompatActivity() {
                         setOnClickListener {
                             faceRecognitionManager.deleteContact(contact.id)
                             hapticManager.vibrateClick()
-                            ttsManager.speak("Deleted ${contact.name}.", priority = 70, severity = "INFO")
+                            ttsManager.speak("Deleted ${contact.name}.", priority = 70, severity = "INFO", mode = TtsMode.FACE)
                             refreshContactsUi()
                         }
                     }
@@ -646,7 +662,7 @@ class MainActivity : AppCompatActivity() {
             val name = editName.text.toString().trim()
             if (name.isBlank()) {
                 Toast.makeText(this, "Please enter a name first", Toast.LENGTH_SHORT).show()
-                ttsManager.speak("Please enter a name first.", priority = 70, severity = "INFO")
+                ttsManager.speak("Please enter a name first.", priority = 70, severity = "INFO", mode = TtsMode.FACE)
                 return@setOnClickListener
             }
 
@@ -660,6 +676,8 @@ class MainActivity : AppCompatActivity() {
             btnCapture.isEnabled = false
             btnCapture.text = "Processing Face..."
 
+            val genId = ttsManager.getGenerationId()
+
             lifecycleScope.launch(Dispatchers.Default) {
                 val result = faceRecognitionManager.registerFaceFromBitmap(name, bitmap)
                 withContext(Dispatchers.Main) {
@@ -670,12 +688,12 @@ class MainActivity : AppCompatActivity() {
                         hapticManager.vibrateClick()
                         editName.setText("")
                         Toast.makeText(this@MainActivity, "Enrolled ${contact.name} successfully!", Toast.LENGTH_LONG).show()
-                        ttsManager.speak("Enrolled ${contact.name} successfully.", priority = 80, severity = "INFO")
+                        ttsManager.speak("Enrolled ${contact.name} successfully.", priority = 80, severity = "INFO", mode = TtsMode.FACE, generationId = genId)
                         refreshContactsUi()
                     }.onFailure { err ->
                         val msg = err.message ?: "Could not detect face"
                         Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
-                        ttsManager.speak(msg, priority = 70, severity = "INFO")
+                        ttsManager.speak(msg, priority = 70, severity = "INFO", mode = TtsMode.FACE, generationId = genId)
                     }
                 }
             }
@@ -688,7 +706,7 @@ class MainActivity : AppCompatActivity() {
                 .setPositiveButton("Delete All") { _, _ ->
                     faceRecognitionManager.clearAllContacts()
                     hapticManager.vibrateClick()
-                    ttsManager.speak("All registered faces deleted.", priority = 70, severity = "INFO")
+                    ttsManager.speak("All registered faces deleted.", priority = 70, severity = "INFO", mode = TtsMode.FACE)
                     refreshContactsUi()
                 }
                 .setNegativeButton("Cancel", null)
@@ -704,11 +722,30 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Mode Controller (Single Source of Truth)
+     * Atomically switches TtsMode, invalidates old speech tokens, and clears pending speech.
      */
     private fun setDetectionMode(newMode: AppDetectionMode, announce: Boolean = true) {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastModeSwitchTapTime < 250L) {
+            return
+        }
+        lastModeSwitchTapTime = now
+
         currentMode = newMode
         decisionEngine.reset()
         hapticManager.vibrateClick()
+
+        val targetTtsMode = when (newMode) {
+            AppDetectionMode.OCR_ONLY -> TtsMode.OCR
+            AppDetectionMode.CURRENCY_ONLY -> TtsMode.CURRENCY
+            AppDetectionMode.COLOR_ONLY -> TtsMode.COLOR
+            AppDetectionMode.BARCODE_ONLY -> TtsMode.BARCODE
+            AppDetectionMode.OBJECT_DETECTION_ONLY,
+            AppDetectionMode.COMBINED -> TtsMode.OBJECT_DETECTION
+        }
+
+        // Atomically switch TTS mode: cuts off old speech audio, increments generation ID, clears queue
+        ttsManager.switchMode(targetTtsMode)
 
         when (newMode) {
             AppDetectionMode.OCR_ONLY -> {
@@ -719,7 +756,7 @@ class MainActivity : AppCompatActivity() {
                     binding.overlayView.updateResults(emptyList(), HazardEvent(), emptyList())
                 }
                 if (announce) {
-                    ttsManager.speak("OCR reading mode. Tap shutter or volume up to read text.", priority = 60, severity = "INFO")
+                    ttsManager.speak("OCR reading mode. Tap shutter or volume up to read text.", priority = 60, severity = "INFO", mode = TtsMode.SYSTEM)
                 }
             }
             AppDetectionMode.CURRENCY_ONLY -> {
@@ -730,7 +767,7 @@ class MainActivity : AppCompatActivity() {
                     binding.overlayView.updateResults(emptyList(), HazardEvent(), emptyList())
                 }
                 if (announce) {
-                    ttsManager.speak("Banknote reader mode. Tap shutter or volume up to identify Indian Rupee note.", priority = 60, severity = "INFO")
+                    ttsManager.speak("Banknote reader mode. Tap shutter or volume up to identify Indian Rupee note.", priority = 60, severity = "INFO", mode = TtsMode.SYSTEM)
                 }
             }
             AppDetectionMode.COLOR_ONLY -> {
@@ -741,7 +778,7 @@ class MainActivity : AppCompatActivity() {
                     binding.overlayView.updateResults(emptyList(), HazardEvent(), emptyList())
                 }
                 if (announce) {
-                    ttsManager.speak("Color detector mode. Center object inside reticle.", priority = 60, severity = "INFO")
+                    ttsManager.speak("Color detector mode. Center object inside reticle.", priority = 60, severity = "INFO", mode = TtsMode.SYSTEM)
                 }
             }
             AppDetectionMode.BARCODE_ONLY -> {
@@ -752,18 +789,18 @@ class MainActivity : AppCompatActivity() {
                     binding.overlayView.updateResults(emptyList(), HazardEvent(), emptyList())
                 }
                 if (announce) {
-                    ttsManager.speak("Barcode scanner mode. Align barcode or QR code in front of camera.", priority = 60, severity = "INFO")
+                    ttsManager.speak("Barcode scanner mode. Align barcode or QR code in front of camera.", priority = 60, severity = "INFO", mode = TtsMode.SYSTEM)
                 }
             }
             AppDetectionMode.OBJECT_DETECTION_ONLY -> {
                 prefs.edit().putString(keySavedMode, "OBJECT").apply()
                 if (announce) {
-                    ttsManager.speak("Object detection mode active.", priority = 60, severity = "INFO")
+                    ttsManager.speak("Object detection mode active.", priority = 60, severity = "INFO", mode = TtsMode.SYSTEM)
                 }
             }
             AppDetectionMode.COMBINED -> {
                 if (announce) {
-                    ttsManager.speak("Combined mode active.", priority = 60, severity = "INFO")
+                    ttsManager.speak("Combined mode active.", priority = 60, severity = "INFO", mode = TtsMode.SYSTEM)
                 }
             }
         }
@@ -913,62 +950,98 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun triggerCurrencyScan() {
+        if (!isCurrencyScanning.compareAndSet(false, true)) {
+            return
+        }
+
         val bitmap = latestBitmap
         if (bitmap == null || bitmap.isRecycled) {
-            ttsManager.speak("Camera initializing. Please hold banknote in front of camera.", priority = 70, severity = "INFO")
+            isCurrencyScanning.set(false)
+            ttsManager.speak("Camera initializing. Please hold banknote in front of camera.", priority = 70, severity = "INFO", mode = TtsMode.CURRENCY)
             return
         }
         hapticManager.vibrateClick()
-        ttsManager.speak("Scanning banknote...", priority = 75, severity = "INFO")
+        ttsManager.speak("Scanning banknote...", priority = 75, severity = "INFO", mode = TtsMode.CURRENCY)
+
+        val genId = ttsManager.getGenerationId()
 
         lifecycleScope.launch(Dispatchers.Default) {
-            val result = currencyDetector.detectCurrency(bitmap)
-            withContext(Dispatchers.Main) {
-                hapticManager.vibrateClick()
-                ttsManager.speak(result.spokenText, priority = 85, severity = "INFO")
-                Toast.makeText(this@MainActivity, result.spokenText, Toast.LENGTH_LONG).show()
+            try {
+                val result = currencyDetector.detectCurrency(bitmap)
+                withContext(Dispatchers.Main) {
+                    hapticManager.vibrateClick()
+                    ttsManager.speak(result.spokenText, priority = 85, severity = "INFO", mode = TtsMode.CURRENCY, generationId = genId)
+                    Toast.makeText(this@MainActivity, result.spokenText, Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                delay(400L)
+                isCurrencyScanning.set(false)
             }
         }
     }
 
     private fun triggerColorDetection() {
+        if (!isColorScanning.compareAndSet(false, true)) {
+            return
+        }
+
         val bitmap = latestBitmap
         if (bitmap == null || bitmap.isRecycled) {
-            ttsManager.speak("Camera initializing. Point camera at colored surface.", priority = 70, severity = "INFO")
+            isColorScanning.set(false)
+            ttsManager.speak("Camera initializing. Point camera at colored surface.", priority = 70, severity = "INFO", mode = TtsMode.COLOR)
             return
         }
         hapticManager.vibrateClick()
 
+        val genId = ttsManager.getGenerationId()
+
         lifecycleScope.launch(Dispatchers.Default) {
-            val result = colorDetector.detectColor(bitmap)
-            withContext(Dispatchers.Main) {
-                hapticManager.vibrateClick()
-                ttsManager.speak(result.spokenDescription, priority = 85, severity = "INFO")
-                Toast.makeText(this@MainActivity, result.spokenDescription, Toast.LENGTH_LONG).show()
+            try {
+                val result = colorDetector.detectColor(bitmap)
+                withContext(Dispatchers.Main) {
+                    hapticManager.vibrateClick()
+                    ttsManager.speak(result.spokenDescription, priority = 85, severity = "INFO", mode = TtsMode.COLOR, generationId = genId)
+                    Toast.makeText(this@MainActivity, result.spokenDescription, Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                delay(400L)
+                isColorScanning.set(false)
             }
         }
     }
 
     private fun triggerBarcodeScan() {
+        if (!isBarcodeScanning.compareAndSet(false, true)) {
+            return
+        }
+
         val bitmap = latestBitmap
         if (bitmap == null || bitmap.isRecycled) {
-            ttsManager.speak("Camera initializing. Align barcode in front of camera.", priority = 70, severity = "INFO")
+            isBarcodeScanning.set(false)
+            ttsManager.speak("Camera initializing. Align barcode in front of camera.", priority = 70, severity = "INFO", mode = TtsMode.BARCODE)
             return
         }
         hapticManager.vibrateClick()
-        ttsManager.speak("Scanning barcode or QR code...", priority = 75, severity = "INFO")
+        ttsManager.speak("Scanning barcode or QR code...", priority = 75, severity = "INFO", mode = TtsMode.BARCODE)
+
+        val genId = ttsManager.getGenerationId()
 
         lifecycleScope.launch(Dispatchers.Default) {
-            val result = barcodeScannerManager.scanBitmap(bitmap)
-            withContext(Dispatchers.Main) {
-                if (result != null) {
-                    hapticManager.vibrateClick()
-                    ttsManager.speak(result.spokenText, priority = 85, severity = "INFO")
-                    Toast.makeText(this@MainActivity, result.spokenText, Toast.LENGTH_LONG).show()
-                } else {
-                    ttsManager.speak("No barcode or QR code detected. Hold steady.", priority = 75, severity = "INFO")
-                    Toast.makeText(this@MainActivity, "No barcode detected", Toast.LENGTH_SHORT).show()
+            try {
+                val result = barcodeScannerManager.scanBitmap(bitmap)
+                withContext(Dispatchers.Main) {
+                    if (result != null) {
+                        hapticManager.vibrateClick()
+                        ttsManager.speak(result.spokenText, priority = 85, severity = "INFO", mode = TtsMode.BARCODE, generationId = genId)
+                        Toast.makeText(this@MainActivity, result.spokenText, Toast.LENGTH_LONG).show()
+                    } else {
+                        ttsManager.speak("No barcode or QR code detected. Hold steady.", priority = 75, severity = "INFO", mode = TtsMode.BARCODE, generationId = genId)
+                        Toast.makeText(this@MainActivity, "No barcode detected", Toast.LENGTH_SHORT).show()
+                    }
                 }
+            } finally {
+                delay(400L)
+                isBarcodeScanning.set(false)
             }
         }
     }
@@ -976,7 +1049,7 @@ class MainActivity : AppCompatActivity() {
     private fun triggerOcrReading() {
         val now = SystemClock.elapsedRealtime()
 
-        if (now - lastOcrRequestTime < 1500L) {
+        if (now - lastOcrRequestTime < 1200L) {
             return
         }
 
@@ -993,23 +1066,25 @@ class MainActivity : AppCompatActivity() {
         val bitmap = latestBitmap
         if (bitmap == null || bitmap.isRecycled) {
             isOcrProcessing.set(false)
-            ttsManager.speak("Video source initializing. Please wait.", priority = 70, severity = "INFO")
+            ttsManager.speak("Video source initializing. Please wait.", priority = 70, severity = "INFO", mode = TtsMode.OCR)
             return
         }
 
-        ttsManager.speak("Reading text...", priority = 80, severity = "INFO")
+        ttsManager.speak("Reading text...", priority = 80, severity = "INFO", mode = TtsMode.OCR)
+
+        val genId = ttsManager.getGenerationId()
 
         lifecycleScope.launch {
             try {
                 val resultText = ocrManager.extractText(bitmap)
                 withContext(Dispatchers.Main) {
-                    ttsManager.startOcrReading(resultText)
+                    ttsManager.startOcrReading(resultText, generationId = genId)
                     Toast.makeText(this@MainActivity, resultText, Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
                 Log.e(tag, "OCR processing error: ${e.message}", e)
                 withContext(Dispatchers.Main) {
-                    ttsManager.speak("Could not read text.", priority = 70, severity = "INFO")
+                    ttsManager.speak("Could not read text.", priority = 70, severity = "INFO", mode = TtsMode.OCR, generationId = genId)
                 }
             } finally {
                 delay(600L)
@@ -1019,8 +1094,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun triggerSceneSummary() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastSceneSummaryTapTime < 600L) {
+            return
+        }
+        lastSceneSummaryTapTime = now
+
         val summary = decisionEngine.getFullSceneSummary(currentDetections)
-        ttsManager.speak(summary, priority = 80, severity = "INFO")
+        ttsManager.speak(summary, priority = 80, severity = "INFO", mode = TtsMode.SYSTEM)
         Toast.makeText(this, summary, Toast.LENGTH_LONG).show()
     }
 
@@ -1049,9 +1130,9 @@ class MainActivity : AppCompatActivity() {
                 val known = activeRecognizedFaces.get().filter { it.isKnown }
                 if (known.isNotEmpty()) {
                     val names = known.joinToString(", ") { it.name ?: "" }
-                    ttsManager.speak("Identified: $names in front of you.", priority = 85, severity = "INFO")
+                    ttsManager.speak("Identified: $names in front of you.", priority = 85, severity = "INFO", mode = TtsMode.FACE)
                 } else {
-                    ttsManager.speak("No registered faces recognized.", priority = 75, severity = "INFO")
+                    ttsManager.speak("No registered faces recognized.", priority = 75, severity = "INFO", mode = TtsMode.FACE)
                 }
             }
             VoiceCommandType.SOS_QUERY -> {
@@ -1063,7 +1144,7 @@ class MainActivity : AppCompatActivity() {
                 stopSpeech()
             }
             VoiceCommandType.UNKNOWN -> {
-                ttsManager.speak("You can ask for color, note, describe scene, read text, or scan barcode.", priority = 70, severity = "INFO")
+                ttsManager.speak("You can ask for color, note, describe scene, read text, or scan barcode.", priority = 70, severity = "INFO", mode = TtsMode.VOICE_ASSISTANT)
             }
         }
     }
@@ -1134,16 +1215,25 @@ class MainActivity : AppCompatActivity() {
         }
 
         binding.btnShutter.setOnClickListener {
-            executePrimaryModeAction()
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastShutterTapTime >= 400L) {
+                lastShutterTapTime = now
+                executePrimaryModeAction()
+            }
         }
 
         binding.btnSceneSummary.setOnClickListener {
-            hapticManager.vibrateClick()
             triggerSceneSummary()
         }
 
         binding.btnTools.setOnClickListener {
             showToolsDialog()
+        }
+
+        binding.txtModeStatus.setOnClickListener {
+            hapticManager.vibrateClick()
+            ttsManager.stop()
+            voiceCommandManager.startListening()
         }
 
         updateCarouselUi()
@@ -1152,6 +1242,7 @@ class MainActivity : AppCompatActivity() {
     /**
      * Intercept Volume UP and Volume DOWN physical buttons cleanly.
      * Prevents the Android system volume slider dialog from appearing.
+     * Includes strict button debouncing and speech preemption.
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
@@ -1183,8 +1274,11 @@ class MainActivity : AppCompatActivity() {
                 volumeUpLongPressRunnable?.let { mainHandler.removeCallbacks(it) }
 
                 if (!isVolumeUpLongPressTriggered) {
-                    // Quick short tap: execute active mode action
-                    executePrimaryModeAction()
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastVolumeUpTapTime >= 350L) {
+                        lastVolumeUpTapTime = now
+                        executePrimaryModeAction()
+                    }
                 }
             }
             return true
@@ -1198,6 +1292,11 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val now = SystemClock.elapsedRealtime()
+                if (now - lastVolumeDownTapTime < 350L) {
+                    return true
+                }
+                lastVolumeDownTapTime = now
+
                 if (now - lastVolumeDownClickTime < 600L) {
                     volumeDownClickCount++
                 } else {
