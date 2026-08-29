@@ -1048,7 +1048,7 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     hapticManager.vibrateClick()
                     ttsManager.speak(result.spokenText, priority = 85, severity = "INFO", mode = TtsMode.CURRENCY, generationId = genId)
-                    Toast.makeText(this@MainActivity, result.spokenText, Toast.LENGTH_LONG).show()
+                    showOnScreenAnnouncement("💵", result.spokenText)
                 }
             } finally {
                 delay(400L)
@@ -1078,7 +1078,7 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     hapticManager.vibrateClick()
                     ttsManager.speak(result.spokenDescription, priority = 85, severity = "INFO", mode = TtsMode.COLOR, generationId = genId)
-                    Toast.makeText(this@MainActivity, result.spokenDescription, Toast.LENGTH_LONG).show()
+                    showOnScreenAnnouncement("🎨", result.spokenDescription)
                 }
             } finally {
                 delay(400L)
@@ -1110,7 +1110,7 @@ class MainActivity : AppCompatActivity() {
                     if (result != null) {
                         hapticManager.vibrateClick()
                         ttsManager.speak(result.spokenText, priority = 85, severity = "INFO", mode = TtsMode.BARCODE, generationId = genId)
-                        Toast.makeText(this@MainActivity, result.spokenText, Toast.LENGTH_LONG).show()
+                        showOnScreenAnnouncement("💵", result.spokenText)
                     } else {
                         ttsManager.speak("No barcode or QR code detected. Hold steady.", priority = 75, severity = "INFO", mode = TtsMode.BARCODE, generationId = genId)
                         Toast.makeText(this@MainActivity, "No barcode detected", Toast.LENGTH_SHORT).show()
@@ -1156,7 +1156,7 @@ class MainActivity : AppCompatActivity() {
                 val resultText = ocrManager.extractText(bitmap)
                 withContext(Dispatchers.Main) {
                     ttsManager.startOcrReading(resultText, generationId = genId)
-                    Toast.makeText(this@MainActivity, resultText, Toast.LENGTH_LONG).show()
+                    showOnScreenAnnouncement("📖", resultText)
                 }
             } catch (e: Exception) {
                 Log.e(tag, "OCR processing error: ${e.message}", e)
@@ -1179,7 +1179,28 @@ class MainActivity : AppCompatActivity() {
 
         val summary = decisionEngine.getFullSceneSummary(currentDetections)
         ttsManager.speak(summary, priority = 80, severity = "INFO", mode = TtsMode.SYSTEM)
-        Toast.makeText(this, summary, Toast.LENGTH_LONG).show()
+        showOnScreenAnnouncement("👁️", summary)
+    }
+
+    private var hideNotificationRunnable: Runnable? = null
+
+    private fun showOnScreenAnnouncement(icon: String, message: String, durationMs: Long = 3500L) {
+        runOnUiThread {
+            hideNotificationRunnable?.let { mainHandler.removeCallbacks(it) }
+            binding.txtNotificationIcon.text = icon
+            binding.txtNotificationMessage.text = message
+            binding.layoutNotificationBanner.alpha = 0f
+            binding.layoutNotificationBanner.visibility = View.VISIBLE
+            binding.layoutNotificationBanner.animate().alpha(1f).setDuration(200).start()
+
+            val runnable = Runnable {
+                binding.layoutNotificationBanner.animate().alpha(0f).setDuration(250).withEndAction {
+                    binding.layoutNotificationBanner.visibility = View.GONE
+                }.start()
+            }
+            hideNotificationRunnable = runnable
+            mainHandler.postDelayed(runnable, durationMs)
+        }
     }
 
     private fun showVoiceAssistantResult(title: String, body: String, speakText: String = body) {
@@ -1377,12 +1398,23 @@ class MainActivity : AppCompatActivity() {
             setDetectionMode(AppDetectionMode.BARCODE_ONLY)
         }
 
-        binding.btnShutter.setOnClickListener {
-            val now = SystemClock.elapsedRealtime()
-            if (now - lastShutterTapTime >= 400L) {
-                lastShutterTapTime = now
-                executePrimaryModeAction()
+        binding.btnShutter.setOnTouchListener { v, event ->
+            when (event.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(70).start()
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(120).start()
+                    if (event.action == android.view.MotionEvent.ACTION_UP) {
+                        val now = SystemClock.elapsedRealtime()
+                        if (now - lastShutterTapTime >= 350L) {
+                            lastShutterTapTime = now
+                            executePrimaryModeAction()
+                        }
+                    }
+                }
             }
+            true
         }
 
         binding.btnSceneSummary.setOnClickListener {

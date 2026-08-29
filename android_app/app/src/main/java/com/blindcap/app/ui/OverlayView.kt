@@ -3,7 +3,9 @@ package com.blindcap.app.ui
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.RectF
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.View
@@ -21,56 +23,70 @@ class OverlayView @JvmOverloads constructor(
 
     private val boxPaint = Paint().apply {
         style = Paint.Style.STROKE
-        strokeWidth = 4f
+        strokeWidth = 3.5f
+        isAntiAlias = true
+    }
+
+    private val boxFillPaint = Paint().apply {
+        style = Paint.Style.FILL
         isAntiAlias = true
     }
 
     private val facePaint = Paint().apply {
         style = Paint.Style.STROKE
-        strokeWidth = 6f
+        strokeWidth = 4f
+        isAntiAlias = true
+    }
+
+    private val labelBgPaint = Paint().apply {
+        color = Color.argb(200, 16, 20, 24)
+        style = Paint.Style.FILL
         isAntiAlias = true
     }
 
     private val textPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 28f
+        textSize = 26f
         isAntiAlias = true
-        setShadowLayer(3f, 1f, 1f, Color.BLACK)
+        isFakeBoldText = true
     }
 
     private val smallTextPaint = Paint().apply {
         color = Color.WHITE
-        textSize = 22f
+        textSize = 20f
         isAntiAlias = true
-        setShadowLayer(2f, 1f, 1f, Color.BLACK)
     }
 
     private val faceTextPaint = Paint().apply {
-        color = Color.parseColor("#00FFFF")
-        textSize = 26f
+        color = Color.parseColor("#00FFCC")
+        textSize = 24f
         isAntiAlias = true
-        setShadowLayer(3f, 1f, 1f, Color.BLACK)
+        isFakeBoldText = true
     }
 
     private val goldTextPaint = Paint().apply {
-        color = Color.parseColor("#FFD700")
-        textSize = 24f
+        color = Color.parseColor("#FFD54F")
+        textSize = 22f
         isAntiAlias = true
-        setShadowLayer(3f, 1f, 1f, Color.BLACK)
+        isFakeBoldText = true
     }
 
+    // Subtle, modern dashed walking corridor guidelines (30% opacity, dashed)
     private val corridorPaint = Paint().apply {
-        color = Color.argb(100, 255, 255, 255)
+        color = Color.argb(45, 255, 255, 255)
         strokeWidth = 2f
         style = Paint.Style.STROKE
+        pathEffect = DashPathEffect(floatArrayOf(12f, 12f), 0f)
+        isAntiAlias = true
     }
 
     private val hudBgPaint = Paint().apply {
-        color = Color.argb(190, 18, 16, 14)
+        color = Color.argb(220, 14, 17, 21)
         style = Paint.Style.FILL
+        isAntiAlias = true
     }
 
-    // Configurable HUD Visibility (Default: OFF for clean user interface)
+    // Configurable HUD Visibility (Default: OFF for clean modern camera UI)
     var showDebugHud: Boolean = false
         set(value) {
             field = value
@@ -112,11 +128,13 @@ class OverlayView @JvmOverloads constructor(
 
         val now = SystemClock.elapsedRealtime()
 
-        // 1. Draw Walking Corridor Boundaries (Center 40% of FOV: 0.30 to 0.70)
-        canvas.drawLine(w * 0.30f, 0f, w * 0.30f, h, corridorPaint)
-        canvas.drawLine(w * 0.70f, 0f, w * 0.70f, h, corridorPaint)
+        // 1. Draw Subtle Walking Corridor Guides (Only inside middle viewfinder area: 15% to 75% height)
+        val corridorTop = h * 0.15f
+        val corridorBottom = h * 0.74f
+        canvas.drawLine(w * 0.30f, corridorTop, w * 0.30f, corridorBottom, corridorPaint)
+        canvas.drawLine(w * 0.70f, corridorTop, w * 0.70f, corridorBottom, corridorPaint)
 
-        // 2. Draw Object Bounding Boxes (Live YOLO Detections of CURRENT frame)
+        // 2. Draw Modern Rounded Object Bounding Boxes
         for (det in detections) {
             val left = (det.bbox.left * w).coerceIn(0f, w)
             val top = (det.bbox.top * h).coerceIn(0f, h)
@@ -126,21 +144,30 @@ class OverlayView @JvmOverloads constructor(
             if (right <= left || bottom <= top) continue
 
             val isObstruction = hazardEvent?.allHazards?.any { it.className.equals(det.className, true) } == true
-            boxPaint.color = when {
-                isObstruction && det.areaRatio >= 0.15f -> Color.RED
-                isObstruction -> Color.parseColor("#FFA500") // Orange
-                det.region == "center" -> Color.YELLOW
-                else -> Color.GREEN
+            val strokeColor = when {
+                isObstruction && det.areaRatio >= 0.15f -> Color.parseColor("#FF3B30") // Modern Red
+                isObstruction -> Color.parseColor("#FF9500") // Modern Amber
+                det.region == "center" -> Color.parseColor("#00FFCC") // Modern Turquoise
+                else -> Color.parseColor("#34C759") // Modern Emerald
             }
 
-            canvas.drawRect(left, top, right, bottom, boxPaint)
+            boxPaint.color = strokeColor
+            val rect = RectF(left, top, right, bottom)
+            canvas.drawRoundRect(rect, 14f, 14f, boxPaint)
 
+            // Label Card with dark pill backdrop
             val distStr = if (det.estimatedDistanceM > 0) " (%.1fm)".format(det.estimatedDistanceM) else ""
             val label = "${det.className.uppercase()} %.0f%%%s".format(det.confidence * 100, distStr)
-            canvas.drawText(label, left + 4f, max(top - 8f, 25f), textPaint)
+            val labelWidth = textPaint.measureText(label) + 20f
+            val labelHeight = 36f
+            val labelTop = max(top - labelHeight - 6f, 16f)
+
+            val labelBgRect = RectF(left, labelTop, left + labelWidth, labelTop + labelHeight)
+            canvas.drawRoundRect(labelBgRect, 10f, 10f, labelBgPaint)
+            canvas.drawText(label, left + 10f, labelTop + 26f, textPaint)
         }
 
-        // 3. Draw Dynamic Real-Time Face Observations (Strict Freshness <= 300ms)
+        // 3. Draw Modern Face Observation Cards
         val validObservations = faceObservations.filter { !it.isStale(now, maxAgeMs = 300L) }
         for (obs in validObservations) {
             val left = (obs.bbox.left * w).coerceIn(0f, w)
@@ -150,60 +177,77 @@ class OverlayView @JvmOverloads constructor(
 
             if (right <= left || bottom <= top) continue
 
+            val rect = RectF(left, top, right, bottom)
             if (obs.isKnown && obs.identity != null) {
-                // Known Contact: Vibrant Cyan Box with Contact Name
-                facePaint.color = Color.parseColor("#00FFFF")
-                canvas.drawRect(left, top, right, bottom, facePaint)
+                facePaint.color = Color.parseColor("#00FFCC")
+                canvas.drawRoundRect(rect, 16f, 16f, facePaint)
 
-                val label = obs.identity.uppercase()
-                canvas.drawText(label, left + 4f, max(top - 8f, 25f), faceTextPaint)
+                val label = "👤 ${obs.identity.uppercase()}"
+                val labelWidth = faceTextPaint.measureText(label) + 20f
+                val labelHeight = 36f
+                val labelTop = max(top - labelHeight - 6f, 16f)
+                val labelBgRect = RectF(left, labelTop, left + labelWidth, labelTop + labelHeight)
+                canvas.drawRoundRect(labelBgRect, 10f, 10f, labelBgPaint)
+                canvas.drawText(label, left + 10f, labelTop + 26f, faceTextPaint)
             } else if (obs.isFacingUser) {
-                // Unknown Face Looking Directly at User: Gold Box
-                facePaint.color = Color.parseColor("#FFD700")
-                canvas.drawRect(left, top, right, bottom, facePaint)
-                canvas.drawText("LOOKING AT YOU", left + 4f, max(top - 8f, 25f), goldTextPaint)
+                facePaint.color = Color.parseColor("#FFD54F")
+                canvas.drawRoundRect(rect, 16f, 16f, facePaint)
+
+                val label = "LOOKING AT YOU"
+                val labelWidth = goldTextPaint.measureText(label) + 20f
+                val labelHeight = 36f
+                val labelTop = max(top - labelHeight - 6f, 16f)
+                val labelBgRect = RectF(left, labelTop, left + labelWidth, labelTop + labelHeight)
+                canvas.drawRoundRect(labelBgRect, 10f, 10f, labelBgPaint)
+                canvas.drawText(label, left + 10f, labelTop + 26f, goldTextPaint)
             } else {
-                // General Face Detection: Subtle White/Cyan Box
-                facePaint.color = Color.argb(180, 0, 255, 255)
-                canvas.drawRect(left, top, right, bottom, facePaint)
-                canvas.drawText("FACE", left + 4f, max(top - 8f, 25f), smallTextPaint)
+                facePaint.color = Color.argb(160, 255, 255, 255)
+                canvas.drawRoundRect(rect, 16f, 16f, facePaint)
+
+                val label = "FACE"
+                val labelWidth = smallTextPaint.measureText(label) + 16f
+                val labelHeight = 32f
+                val labelTop = max(top - labelHeight - 6f, 16f)
+                val labelBgRect = RectF(left, labelTop, left + labelWidth, labelTop + labelHeight)
+                canvas.drawRoundRect(labelBgRect, 8f, 8f, labelBgPaint)
+                canvas.drawText(label, left + 8f, labelTop + 22f, smallTextPaint)
             }
         }
 
-        // 4. Draw Performance Diagnostic HUD ONLY if enabled in Settings
+        // 4. Draw Performance Telemetry HUD ONLY if enabled
         if (showDebugHud) {
             val hudWidth = 460f
             val hudHeight = 330f
-            val startX = 20f
-            val startY = 160f
+            val startX = 24f
+            val startY = 180f
 
-            canvas.drawRoundRect(startX, startY, startX + hudWidth, startY + hudHeight, 16f, 16f, hudBgPaint)
+            canvas.drawRoundRect(startX, startY, startX + hudWidth, startY + hudHeight, 20f, 20f, hudBgPaint)
 
             var yPos = startY + 34f
             val lineGap = 34f
 
-            canvas.drawText("OCULUS AI TELEMETRY", startX + 16f, yPos, textPaint)
+            canvas.drawText("OCULUS AI TELEMETRY", startX + 18f, yPos, textPaint)
             yPos += lineGap
-            canvas.drawText("Source: %.0f FPS  |  AI: %.1f FPS".format(cameraFps, aiFps), startX + 16f, yPos, textPaint)
+            canvas.drawText("Source: %.0f FPS  |  AI: %.1f FPS".format(cameraFps, aiFps), startX + 18f, yPos, textPaint)
             yPos += lineGap
             canvas.drawText("Lat: %.0fms (Pre:%.1f Inf:%.1f Post:%.1f)".format(
                 timings.totalMs, timings.preprocessMs, timings.inferenceMs, timings.postprocessMs
-            ), startX + 16f, yPos, smallTextPaint)
+            ), startX + 18f, yPos, smallTextPaint)
             yPos += lineGap
-            canvas.drawText("P95 Latency: %.1fms  |  Backend: %s".format(timings.p95Ms, activeDevice), startX + 16f, yPos, smallTextPaint)
+            canvas.drawText("P95 Latency: %.1fms  |  Backend: %s".format(timings.p95Ms, activeDevice), startX + 18f, yPos, smallTextPaint)
             yPos += lineGap
             val faceCountStr = if (validObservations.isNotEmpty()) " | Faces: ${validObservations.size}" else ""
-            canvas.drawText("Objects: ${detections.size}$faceCountStr | TTS: $ttsStatus", startX + 16f, yPos, smallTextPaint)
+            canvas.drawText("Objects: ${detections.size}$faceCountStr | TTS: $ttsStatus", startX + 18f, yPos, smallTextPaint)
             yPos += lineGap
 
             val faceMsStr = if (faceScanMs > 0f) " (%.0fms)".format(faceScanMs) else ""
             val truncDiag = if (faceDiagnostic.length > 22) faceDiagnostic.take(22) + "..." else faceDiagnostic
-            canvas.drawText("Face AI: $truncDiag$faceMsStr", startX + 16f, yPos, smallTextPaint)
+            canvas.drawText("Face AI: $truncDiag$faceMsStr", startX + 18f, yPos, smallTextPaint)
             yPos += lineGap
 
             val statusText = errorMessage ?: (hazardEvent?.warningText ?: "Path clear (silent)")
             val truncated = if (statusText.length > 28) statusText.take(28) + "..." else statusText
-            canvas.drawText("Event: $truncated", startX + 16f, yPos, smallTextPaint)
+            canvas.drawText("Event: $truncated", startX + 18f, yPos, smallTextPaint)
         }
     }
 }
