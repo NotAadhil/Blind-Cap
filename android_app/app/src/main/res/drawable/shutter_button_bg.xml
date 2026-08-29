@@ -3,7 +3,7 @@
     android:color="#4DFFFFFF">
     <item>
         <layer-list>
-            <!-- Outer Ring (Stock Pixel Camera 4dp Ring) -->
+            <!-- Outer Ring -->
             <item>
                 <shape android:shape="oval">
                     <stroke
@@ -11,16 +11,16 @@
                         android:color="#FFFFFFFF" />
                     <solid android:color="#00000000" />
                     <size
-                        android:width="80dp"
-                        android:height="80dp" />
+                        android:width="84dp"
+                        android:height="84dp" />
                 </shape>
             </item>
             <!-- Inner Solid Shutter Disc -->
             <item
-                android:bottom="8dp"
-                android:left="8dp"
-                android:right="8dp"
-                android:top="8dp">
+                android:bottom="9dp"
+                android:left="9dp"
+                android:right="9dp"
+                android:top="9dp">
                 <shape android:shape="oval">
                     <solid android:color="#FFFFFFFF" />
                     <stroke
