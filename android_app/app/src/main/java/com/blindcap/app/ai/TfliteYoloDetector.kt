@@ -155,6 +155,9 @@ class TfliteYoloDetector(
 
     @Synchronized
     fun detect(bitmap: Bitmap): List<Detection> {
+        if (bitmap.isRecycled) {
+            return emptyList()
+        }
         val interp = interpreter
         if (interp == null || detectorState != DetectorState.READY) {
             lastError = if (lastError != null) lastError else "Interpreter not initialized (state=$detectorState)"

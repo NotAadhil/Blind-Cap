@@ -1,6 +1,7 @@
 package com.blindcap.app
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Bundle
 import android.widget.EditText
@@ -177,25 +178,33 @@ class SettingsActivity : AppCompatActivity() {
     private fun showFaceContactsDialog() {
         val contacts = faceRecognitionManager.getRegisteredContacts()
         val names = if (contacts.isEmpty()) {
-            "No contacts enrolled yet.\n\nPoint camera at a face on the main screen to enroll."
+            "No contacts enrolled yet.\n\nTap 'Enroll on Camera' below to register a face."
         } else {
             contacts.mapIndexed { idx, c -> "${idx + 1}. ${c.name}" }.joinToString("\n")
         }
 
         val layout = TextView(this).apply {
             text = names
-            textSize = 16f
-            setPadding(40, 20, 40, 20)
+            textSize = 15f
+            setPadding(48, 24, 48, 24)
         }
 
         AlertDialog.Builder(this)
             .setTitle("Registered Faces (${contacts.size})")
             .setView(layout)
+            .setPositiveButton("📸 Enroll on Camera") { _, _ ->
+                val intent = Intent(this, MainActivity::class.java).apply {
+                    putExtra("open_face_enroll", true)
+                    flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+                startActivity(intent)
+                finish()
+            }
             .setNeutralButton("Clear All") { _, _ ->
                 faceRecognitionManager.clearAllContacts()
                 Toast.makeText(this, "Cleared all face contacts", Toast.LENGTH_SHORT).show()
             }
-            .setPositiveButton("Close", null)
+            .setNegativeButton("Close", null)
             .show()
     }
 

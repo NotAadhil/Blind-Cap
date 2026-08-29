@@ -24,7 +24,48 @@
         android:textSize="13sp"
         android:paddingBottom="16dp" />
 
-    <!-- Tool 1: Currency -->
+    <!-- Tool 1: Face Enrollment & Contacts -->
+    <LinearLayout
+        android:id="@+id/cardToolFaceEnroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/card_mode_bg"
+        android:padding="16dp"
+        android:layout_marginBottom="12dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="👤"
+            android:textSize="28sp"
+            android:paddingEnd="16dp" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Face Enrolment &amp; Contacts"
+                android:textColor="#FF80AB"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Register faces directly on camera or manage known contacts."
+                android:textColor="#CAC4D0"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Tool 2: Currency -->
     <LinearLayout
         android:id="@+id/cardToolCurrency"
         android:layout_width="match_parent"
@@ -59,13 +100,13 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Identifies ₹10, ₹20, ₹50, ₹100, ₹200, ₹500 banknotes instantly."
+                android:text="Identifies ₹10, ₹20, ₹50, ₹100, ₹200, ₹500 banknotes."
                 android:textColor="#CAC4D0"
                 android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Tool 2: Color & Light -->
+    <!-- Tool 3: Color & Light -->
     <LinearLayout
         android:id="@+id/cardToolColor"
         android:layout_width="match_parent"
@@ -106,7 +147,7 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Tool 3: Barcode & QR -->
+    <!-- Tool 4: Barcode & QR -->
     <LinearLayout
         android:id="@+id/cardToolBarcode"
         android:layout_width="match_parent"

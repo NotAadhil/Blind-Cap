@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#1C1B1F"
+    android:padding="20dp">
+
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="4dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="👤 Face Recognition"
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/txtFaceLiveCount"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/circle_btn_bg"
+            android:text="0 Enrolled"
+            android:textColor="#00FFCC"
+            android:textSize="12sp"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="4dp" />
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Center person's face in the camera view to register."
+        android:textColor="#CAC4D0"
+        android:textSize="13sp"
+        android:paddingBottom="12dp" />
+
+    <!-- Live Face Alignment Status -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/card_mode_bg"
+        android:padding="12dp"
+        android:layout_marginBottom="14dp">
+
+        <View
+            android:id="@+id/viewFaceStatusDot"
+            android:layout_width="10dp"
+            android:layout_height="10dp"
+            android:background="@drawable/reticle_circle"
+            android:layout_marginEnd="10dp" />
+
+        <TextView
+            android:id="@+id/txtFaceAlignmentStatus"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Looking for face in camera..."
+            android:textColor="#FFD54F"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Name Input Field -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/inputLayoutFaceName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Person's Name"
+        app:boxStrokeColor="#00FFCC"
+        app:hintTextColor="#00FFCC"
+        android:textColorHint="#938F99"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+        android:layout_marginBottom="12dp">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/editFaceName"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="textPersonName|textCapWords"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:maxLines="1" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- Capture & Enroll Button -->
+    <Button
+        android:id="@+id/btnCaptureFace"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:text="📸 Capture &amp; Enroll Face"
+        android:backgroundTint="#00FFCC"
+        android:textColor="#1F2421"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Enrolled Contacts Section -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Registered Contacts"
+        android:textColor="#E6E1E5"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:paddingBottom="8dp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="140dp"
+        android:background="#141218"
+        android:padding="8dp"
+        android:layout_marginBottom="16dp">
+
+        <LinearLayout
+            android:id="@+id/layoutEnrolledContactsList"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/txtNoContactsPlaceholder"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No registered faces yet."
+                android:textColor="#938F99"
+                android:textSize="13sp"
+                android:gravity="center"
+                android:paddingVertical="30dp" />
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- Action Buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnClearAllFaces"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:text="Clear All"
+            android:backgroundTint="#49454F"
+            android:textColor="#FFB4AB"
+            android:layout_marginEnd="8dp" />
+
+        <Button
+            android:id="@+id/btnCloseFaceDialog"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:text="Close"
+            android:backgroundTint="#333333"
+            android:textColor="#FFFFFF" />
+    </LinearLayout>
+
+</LinearLayout>

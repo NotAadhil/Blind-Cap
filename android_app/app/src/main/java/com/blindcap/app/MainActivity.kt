@@ -16,6 +16,10 @@ import android.view.GestureDetector
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.widget.Button
+import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -32,6 +36,7 @@ import androidx.lifecycle.lifecycleScope
 import com.blindcap.app.ai.ColorDetector
 import com.blindcap.app.ai.CurrencyDetector
 import com.blindcap.app.ai.Detection
+import com.blindcap.app.ai.FaceContact
 import com.blindcap.app.ai.FaceRecognitionManager
 import com.blindcap.app.ai.RecognizedFace
 import com.blindcap.app.ai.TfliteYoloDetector
@@ -53,6 +58,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -125,10 +133,14 @@ class MainActivity : AppCompatActivity() {
     private val activeRecognizedFaces = AtomicReference<List<RecognizedFace>>(emptyList())
     private var lastFaceScanTime = 0L
 
+    // Active Face Enrollment Dialog reference for live status updates
+    private var activeFaceDialog: AlertDialog? = null
+    private var txtFaceAlignmentStatusRef: TextView? = null
+    private var viewFaceStatusDotRef: View? = null
+
     // Tool Processing States & Debounce Guards
     private val isOcrProcessing = AtomicBoolean(false)
     private var lastOcrRequestTime = 0L
-    private val isToolBusy = AtomicBoolean(false)
 
     // Volume button tracking
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -185,13 +197,21 @@ class MainActivity : AppCompatActivity() {
             onStatusChanged = { isListening, msg ->
                 runOnUiThread {
                     if (isListening) {
+                        binding.voiceAssistantOverlay.visibility = View.VISIBLE
+                        binding.txtVoiceStatus.text = msg
                         binding.txtModeStatus.text = "🎤 $msg"
                     } else {
+                        binding.voiceAssistantOverlay.visibility = View.GONE
                         updateCarouselUi()
                     }
                 }
             }
         )
+
+        binding.btnCancelVoice.setOnClickListener {
+            voiceCommandManager.cancel()
+            binding.voiceAssistantOverlay.visibility = View.GONE
+        }
 
         // Apply saved debug HUD preference
         binding.overlayView.showDebugHud = prefs.getBoolean(keyShowDebugHud, false)
@@ -241,7 +261,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Refresh preferences that might have changed in SettingsActivity
+        // Refresh preferences
         binding.overlayView.showDebugHud = prefs.getBoolean(keyShowDebugHud, false)
         val isSeparate = prefs.getBoolean(keySeparateModes, false)
         if (!isSeparate && currentMode != AppDetectionMode.COMBINED) {
@@ -277,7 +297,7 @@ class MainActivity : AppCompatActivity() {
                 if (frame != null) {
                     latestBitmap = frame
 
-                    // When specialized on-demand mode is active, YOLO and Face inference are completely suspended
+                    // When specialized on-demand mode is active, YOLO and Face inference are suspended
                     if (currentMode != AppDetectionMode.COMBINED && currentMode != AppDetectionMode.OBJECT_DETECTION_ONLY) {
                         if (currentDetections.isNotEmpty()) {
                             currentDetections = emptyList()
@@ -329,6 +349,7 @@ class MainActivity : AppCompatActivity() {
             }
         )
 
+        // Asynchronously scan for faces
         if ((now - lastFaceScanTime >= 220L) && hasUnannouncedPerson && !isFaceScanning.get()) {
             if (isFaceScanning.compareAndSet(false, true)) {
                 lastFaceScanTime = now
@@ -336,6 +357,7 @@ class MainActivity : AppCompatActivity() {
                     try {
                         val faces = faceRecognitionManager.detectAndRecognizeFaces(bitmap)
                         activeRecognizedFaces.set(faces)
+                        updateFaceEnrollmentDialogStatus(faces.isNotEmpty())
                     } catch (e: Exception) {
                         Log.e(tag, "Face scan error: ${e.message}", e)
                     } finally {
@@ -393,9 +415,185 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateFaceEnrollmentDialogStatus(hasFace: Boolean) {
+        if (activeFaceDialog == null) return
+        runOnUiThread {
+            if (hasFace) {
+                txtFaceAlignmentStatusRef?.text = "Face detected! Ready to enroll."
+                txtFaceAlignmentStatusRef?.setTextColor(0xFF00FFCC.toInt())
+                viewFaceStatusDotRef?.setBackgroundColor(0xFF00FFCC.toInt())
+            } else {
+                txtFaceAlignmentStatusRef?.text = "Looking for face in camera..."
+                txtFaceAlignmentStatusRef?.setTextColor(0xFFFFD54F.toInt())
+                viewFaceStatusDotRef?.setBackgroundColor(0xFFFFD54F.toInt())
+            }
+        }
+    }
+
+    /**
+     * Dedicated Face Management & Enrollment Dialog
+     * Keeps camera preview live and visible in the background.
+     */
+    private fun showFaceEnrollDialog() {
+        hapticManager.vibrateClick()
+        val dialogView = layoutInflater.inflate(R.layout.dialog_face_enroll, null)
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setCancelable(true)
+            .create()
+
+        activeFaceDialog = dialog
+        dialog.setOnDismissListener {
+            activeFaceDialog = null
+            txtFaceAlignmentStatusRef = null
+            viewFaceStatusDotRef = null
+        }
+
+        val txtCount = dialogView.findViewById<TextView>(R.id.txtFaceLiveCount)
+        val txtStatus = dialogView.findViewById<TextView>(R.id.txtFaceAlignmentStatus)
+        val dotStatus = dialogView.findViewById<View>(R.id.viewFaceStatusDot)
+        val editName = dialogView.findViewById<EditText>(R.id.editFaceName)
+        val btnCapture = dialogView.findViewById<Button>(R.id.btnCaptureFace)
+        val layoutContacts = dialogView.findViewById<LinearLayout>(R.id.layoutEnrolledContactsList)
+        val btnClearAll = dialogView.findViewById<Button>(R.id.btnClearAllFaces)
+        val btnClose = dialogView.findViewById<Button>(R.id.btnCloseFaceDialog)
+
+        txtFaceAlignmentStatusRef = txtStatus
+        viewFaceStatusDotRef = dotStatus
+
+        fun refreshContactsUi() {
+            val contacts = faceRecognitionManager.getRegisteredContacts()
+            txtCount.text = "${contacts.size} Enrolled"
+            layoutContacts.removeAllViews()
+
+            if (contacts.isEmpty()) {
+                val placeholder = TextView(this).apply {
+                    text = "No registered faces yet."
+                    setTextColor(0xFF938F99.toInt())
+                    textSize = 13f
+                    gravity = android.view.Gravity.CENTER
+                    setPadding(0, 40, 0, 40)
+                }
+                layoutContacts.addView(placeholder)
+            } else {
+                val sdf = SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault())
+                for (contact in contacts) {
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                        setPadding(16, 12, 16, 12)
+                        setBackgroundColor(0xFF2B2930.toInt())
+                        val params = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply { setMargins(0, 0, 0, 8) }
+                        layoutParams = params
+                    }
+
+                    val infoLayout = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+
+                    val nameTv = TextView(this).apply {
+                        text = "👤 ${contact.name}"
+                        setTextColor(0xFFFFFFFF.toInt())
+                        textSize = 15f
+                        setTypeface(null, android.graphics.Typeface.BOLD)
+                    }
+
+                    val timeTv = TextView(this).apply {
+                        text = "Enrolled: ${sdf.format(Date(contact.enrolledTimestamp))}"
+                        setTextColor(0xFFCAC4D0.toInt())
+                        textSize = 11f
+                    }
+
+                    infoLayout.addView(nameTv)
+                    infoLayout.addView(timeTv)
+
+                    val delBtn = ImageButton(this).apply {
+                        setImageResource(android.R.drawable.ic_menu_delete)
+                        setBackgroundColor(0x00000000)
+                        setColorFilter(0xFFFFB4AB.toInt())
+                        setOnClickListener {
+                            faceRecognitionManager.deleteContact(contact.id)
+                            hapticManager.vibrateClick()
+                            ttsManager.speak("Deleted ${contact.name}.", priority = 70, severity = "INFO")
+                            refreshContactsUi()
+                        }
+                    }
+
+                    row.addView(infoLayout)
+                    row.addView(delBtn)
+                    layoutContacts.addView(row)
+                }
+            }
+        }
+
+        refreshContactsUi()
+
+        btnCapture.setOnClickListener {
+            val name = editName.text.toString().trim()
+            if (name.isBlank()) {
+                Toast.makeText(this, "Please enter a name first", Toast.LENGTH_SHORT).show()
+                ttsManager.speak("Please enter a name first.", priority = 70, severity = "INFO")
+                return@setOnClickListener
+            }
+
+            val bitmap = latestBitmap
+            if (bitmap == null) {
+                Toast.makeText(this, "Camera not ready yet", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            hapticManager.vibrateClick()
+            btnCapture.isEnabled = false
+            btnCapture.text = "Processing Face..."
+
+            lifecycleScope.launch(Dispatchers.Default) {
+                val result = faceRecognitionManager.registerFaceFromBitmap(name, bitmap)
+                withContext(Dispatchers.Main) {
+                    btnCapture.isEnabled = true
+                    btnCapture.text = "📸 Capture & Enroll Face"
+
+                    result.onSuccess { contact ->
+                        hapticManager.vibrateClick()
+                        editName.setText("")
+                        Toast.makeText(this@MainActivity, "Enrolled ${contact.name} successfully!", Toast.LENGTH_LONG).show()
+                        ttsManager.speak("Enrolled ${contact.name} successfully.", priority = 80, severity = "INFO")
+                        refreshContactsUi()
+                    }.onFailure { err ->
+                        val msg = err.message ?: "Could not detect face"
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                        ttsManager.speak(msg, priority = 70, severity = "INFO")
+                    }
+                }
+            }
+        }
+
+        btnClearAll.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Clear All Faces")
+                .setMessage("Are you sure you want to delete all registered faces?")
+                .setPositiveButton("Delete All") { _, _ ->
+                    faceRecognitionManager.clearAllContacts()
+                    hapticManager.vibrateClick()
+                    ttsManager.speak("All registered faces deleted.", priority = 70, severity = "INFO")
+                    refreshContactsUi()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
+        btnClose.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        dialog.show()
+    }
+
     /**
      * Mode Controller (Single Source of Truth)
-     * Switches processing consumers cleanly WITHOUT restarting the camera or stream.
      */
     private fun setDetectionMode(newMode: AppDetectionMode, announce: Boolean = true) {
         currentMode = newMode
@@ -444,7 +642,7 @@ class MainActivity : AppCompatActivity() {
                     binding.overlayView.updateResults(emptyList(), HazardEvent(), emptyList())
                 }
                 if (announce) {
-                    ttsManager.speak("Barcode scanner mode. Align barcode or QR code.", priority = 60, severity = "INFO")
+                    ttsManager.speak("Barcode scanner mode. Align barcode or QR code in front of camera.", priority = 60, severity = "INFO")
                 }
             }
             AppDetectionMode.OBJECT_DETECTION_ONLY -> {
@@ -491,7 +689,6 @@ class MainActivity : AppCompatActivity() {
             binding.btnPillColor.visibility = if (enableColor) View.VISIBLE else View.GONE
             binding.btnPillBarcode.visibility = if (enableBarcode) View.VISIBLE else View.GONE
 
-            // Reset all pills
             val unselBg = R.drawable.mode_pill_unselected
             val unselCol = 0xFFFFFFFF.toInt()
             val selBg = R.drawable.mode_pill_selected
@@ -572,10 +769,16 @@ class MainActivity : AppCompatActivity() {
             .setCancelable(true)
             .create()
 
+        val cardFace = dialogView.findViewById<View>(R.id.cardToolFaceEnroll)
         val cardCurrency = dialogView.findViewById<View>(R.id.cardToolCurrency)
         val cardColor = dialogView.findViewById<View>(R.id.cardToolColor)
         val cardBarcode = dialogView.findViewById<View>(R.id.cardToolBarcode)
         val btnCancel = dialogView.findViewById<View>(R.id.btnCancelTools)
+
+        cardFace.setOnClickListener {
+            dialog.dismiss()
+            showFaceEnrollDialog()
+        }
 
         cardCurrency.setOnClickListener {
             dialog.dismiss()
@@ -653,7 +856,7 @@ class MainActivity : AppCompatActivity() {
                     ttsManager.speak(result.spokenText, priority = 85, severity = "INFO")
                     Toast.makeText(this@MainActivity, result.spokenText, Toast.LENGTH_LONG).show()
                 } else {
-                    ttsManager.speak("No barcode or QR code detected. Try holding closer.", priority = 75, severity = "INFO")
+                    ttsManager.speak("No barcode or QR code detected. Hold steady.", priority = 75, severity = "INFO")
                     Toast.makeText(this@MainActivity, "No barcode detected", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -714,6 +917,7 @@ class MainActivity : AppCompatActivity() {
     private fun handleVoiceCommand(command: VoiceCommand) {
         Log.i(tag, "Voice command received: type=${command.type}, text='${command.rawText}'")
         hapticManager.vibrateClick()
+        binding.voiceAssistantOverlay.visibility = View.GONE
 
         when (command.type) {
             VoiceCommandType.COLOR_QUERY -> {
@@ -731,8 +935,17 @@ class MainActivity : AppCompatActivity() {
             VoiceCommandType.BARCODE_QUERY -> {
                 triggerBarcodeScan()
             }
+            VoiceCommandType.FACE_QUERY -> {
+                val known = activeRecognizedFaces.get().filter { it.isKnown }
+                if (known.isNotEmpty()) {
+                    val names = known.joinToString(", ") { it.name ?: "" }
+                    ttsManager.speak("Identified: $names in front of you.", priority = 85, severity = "INFO")
+                } else {
+                    ttsManager.speak("No registered faces recognized.", priority = 75, severity = "INFO")
+                }
+            }
             VoiceCommandType.SOS_QUERY -> {
-                sosManager.triggerEmergencySos { success, msg ->
+                sosManager.triggerEmergencySos { _, msg ->
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                 }
             }
@@ -740,7 +953,7 @@ class MainActivity : AppCompatActivity() {
                 stopSpeech()
             }
             VoiceCommandType.UNKNOWN -> {
-                ttsManager.speak("You can ask what color, what note, describe scene, or read text.", priority = 70, severity = "INFO")
+                ttsManager.speak("You can ask for color, note, describe scene, read text, or scan barcode.", priority = 70, severity = "INFO")
             }
         }
     }
@@ -764,6 +977,10 @@ class MainActivity : AppCompatActivity() {
             hapticManager.vibrateClick()
             val intent = Intent(this, SettingsActivity::class.java)
             startActivity(intent)
+        }
+
+        binding.btnFaceManager.setOnClickListener {
+            showFaceEnrollDialog()
         }
     }
 
@@ -809,8 +1026,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * CRITICAL FIX: Intercept Volume UP and Volume DOWN keys without calling super.
-     * Prevents the Android system volume slider dialog from popping up on screen!
+     * Intercept Volume UP and Volume DOWN physical buttons cleanly.
+     * Prevents the Android system volume slider dialog from appearing.
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
@@ -820,7 +1037,7 @@ class MainActivity : AppCompatActivity() {
             val voiceEnabled = prefs.getBoolean(keyVoiceCommands, true)
 
             if (action == KeyEvent.ACTION_DOWN) {
-                // If speech or OCR is currently speaking, stop speech immediately
+                // If speech or OCR is currently active, cancel immediately
                 if (ttsManager.isOcrActive || ttsManager.isSpeaking) {
                     stopSpeech()
                     return true
@@ -831,21 +1048,18 @@ class MainActivity : AppCompatActivity() {
                     if (voiceEnabled) {
                         volumeUpLongPressRunnable = Runnable {
                             isVolumeUpLongPressTriggered = true
+                            ttsManager.stop()
                             hapticManager.vibrateClick()
-                            ttsManager.speak("Listening...", priority = 80, severity = "INFO")
                             voiceCommandManager.startListening()
                         }
-                        mainHandler.postDelayed(volumeUpLongPressRunnable!!, 450L)
+                        mainHandler.postDelayed(volumeUpLongPressRunnable!!, 400L)
                     }
                 }
             } else if (action == KeyEvent.ACTION_UP) {
                 volumeUpLongPressRunnable?.let { mainHandler.removeCallbacks(it) }
 
-                if (isVolumeUpLongPressTriggered) {
-                    isVolumeUpLongPressTriggered = false
-                    voiceCommandManager.stopListening()
-                } else {
-                    // Single short press: execute active mode primary action!
+                if (!isVolumeUpLongPressTriggered) {
+                    // Quick short tap: execute active mode action
                     executePrimaryModeAction()
                 }
             }
@@ -870,7 +1084,7 @@ class MainActivity : AppCompatActivity() {
                 // 4-click Volume DOWN triggers Emergency SOS
                 if (volumeDownClickCount >= 4) {
                     volumeDownClickCount = 0
-                    sosManager.triggerEmergencySos { success, msg ->
+                    sosManager.triggerEmergencySos { _, msg ->
                         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                     }
                     return true

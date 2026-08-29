@@ -156,6 +156,7 @@ class FaceRecognitionManager(
      * ONLY extracts embeddings when ML Kit explicitly detects a human face.
      */
     fun detectAndRecognizeFaces(bitmap: Bitmap): List<RecognizedFace> {
+        if (bitmap.isRecycled) return emptyList()
         val t0 = SystemClock.elapsedRealtime()
         val detector = faceDetector ?: return emptyList()
         val recognizedList = ArrayList<RecognizedFace>(4)

@@ -50,7 +50,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- TOP CONTROL BAR: Settings Gear + Mode Badge + Source Badge -->
+    <!-- TOP CONTROL BAR: Settings Gear + Face Enrolment + Mode Badge + Source Badge -->
     <LinearLayout
         android:id="@+id/topBar"
         android:layout_width="match_parent"
@@ -58,7 +58,7 @@
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:paddingTop="36dp"
-        android:paddingHorizontal="20dp"
+        android:paddingHorizontal="16dp"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
@@ -70,7 +70,18 @@
             android:background="@drawable/circle_btn_bg"
             android:src="@drawable/ic_settings"
             android:contentDescription="Open Settings"
-            app:tint="#FFFFFF" />
+            app:tint="#FFFFFF"
+            android:layout_marginEnd="8dp" />
+
+        <ImageButton
+            android:id="@+id/btnFaceManager"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/circle_btn_bg"
+            android:src="@drawable/ic_tools"
+            android:contentDescription="Manage Face Contacts"
+            app:tint="#FF80AB"
+            android:layout_marginEnd="8dp" />
 
         <TextView
             android:id="@+id/txtModeStatus"
@@ -275,6 +286,57 @@
                 app:tint="#FFFFFF" />
 
         </LinearLayout>
+    </LinearLayout>
+
+    <!-- LAYER 4: Voice Assistant Listening Overlay (Visible when voice active) -->
+    <LinearLayout
+        android:id="@+id/voiceAssistantOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:background="#E6000000"
+        android:visibility="gone"
+        android:padding="32dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🎙️"
+            android:textSize="56sp"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:id="@+id/txtVoiceStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Listening..."
+            android:textColor="#00FFCC"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:id="@+id/txtVoiceTranscription"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Ask: What color is this, What note is this, Describe scene, or Read text"
+            android:textColor="#E6E1E5"
+            android:textSize="15sp"
+            android:gravity="center"
+            android:layout_marginBottom="32dp" />
+
+        <Button
+            android:id="@+id/btnCancelVoice"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:text="Cancel Voice"
+            android:backgroundTint="#333333"
+            android:textColor="#FFFFFF" />
     </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
