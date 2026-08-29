@@ -2,7 +2,6 @@ package com.blindcap.app.speech
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -56,18 +55,14 @@ class VoiceCommandManager(
 
         try {
             val appContext = context.applicationContext
-            speechRecognizer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && SpeechRecognizer.isOnDeviceRecognitionAvailable(appContext)) {
-                Log.i(tag, "Using on-device SpeechRecognizer")
-                SpeechRecognizer.createOnDeviceSpeechRecognizer(appContext)
-            } else if (SpeechRecognizer.isRecognitionAvailable(appContext)) {
-                Log.i(tag, "Using system SpeechRecognizer")
-                SpeechRecognizer.createSpeechRecognizer(appContext)
+            if (SpeechRecognizer.isRecognitionAvailable(appContext)) {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(appContext).apply {
+                    setRecognitionListener(createListener())
+                }
+                Log.i(tag, "SpeechRecognizer initialized successfully")
             } else {
                 Log.w(tag, "Speech recognition is NOT available on this device")
-                null
             }
-
-            speechRecognizer?.setRecognitionListener(createListener())
         } catch (e: Exception) {
             Log.e(tag, "Failed to initialize SpeechRecognizer: ${e.message}", e)
         }
@@ -75,16 +70,19 @@ class VoiceCommandManager(
 
     fun startListening() {
         mainHandler.post {
-            if (isListening) {
-                Log.d(tag, "Already listening, ignoring startListening")
-                return@post
-            }
-
             try {
+                // Cancel any previous session
+                try {
+                    speechRecognizer?.cancel()
+                    speechRecognizer?.destroy()
+                } catch (_: Exception) {}
+                speechRecognizer = null
+
                 ensureRecognizerInitialized()
 
                 if (speechRecognizer == null) {
-                    onStatusChanged(false, "Speech recognition unavailable")
+                    isListening = false
+                    onStatusChanged(false, "Speech recognizer unavailable")
                     return@post
                 }
 
@@ -98,10 +96,10 @@ class VoiceCommandManager(
 
                 isListening = true
                 onStatusChanged(true, "Listening... Speak now")
-                Log.i(tag, "SpeechRecognizer.startListening() called successfully")
+                Log.i(tag, "SpeechRecognizer started listening")
                 speechRecognizer?.startListening(intent)
 
-                // Safety timeout after 7 seconds of inactivity
+                // 7-second safety timeout
                 timeoutRunnable?.let { mainHandler.removeCallbacks(it) }
                 timeoutRunnable = Runnable {
                     if (isListening) {
@@ -114,7 +112,7 @@ class VoiceCommandManager(
             } catch (e: Exception) {
                 Log.e(tag, "Error in startListening: ${e.message}", e)
                 isListening = false
-                onStatusChanged(false, "Voice assistant ready")
+                onStatusChanged(false, "Voice assistant error")
             }
         }
     }
@@ -130,7 +128,7 @@ class VoiceCommandManager(
                 Log.e(tag, "Error stopping SpeechRecognizer: ${e.message}", e)
             } finally {
                 isListening = false
-                onStatusChanged(false, "Processing...")
+                onStatusChanged(false, "Processing query...")
             }
         }
     }

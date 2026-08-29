@@ -1249,71 +1249,73 @@ class MainActivity : AppCompatActivity() {
         val action = event.action
 
         if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-            val voiceEnabled = prefs.getBoolean(keyVoiceCommands, true)
-
             if (action == KeyEvent.ACTION_DOWN) {
-                // If speech or OCR is currently active, cancel immediately
-                if (ttsManager.isOcrActive || ttsManager.isSpeaking) {
-                    stopSpeech()
-                    return true
-                }
-
                 if (event.repeatCount == 0) {
-                    isVolumeUpLongPressTriggered = false
-                    if (voiceEnabled) {
-                        volumeUpLongPressRunnable = Runnable {
-                            isVolumeUpLongPressTriggered = true
-                            ttsManager.stop()
-                            hapticManager.vibrateClick()
-                            voiceCommandManager.startListening()
-                        }
-                        mainHandler.postDelayed(volumeUpLongPressRunnable!!, 400L)
-                    }
-                }
-            } else if (action == KeyEvent.ACTION_UP) {
-                volumeUpLongPressRunnable?.let { mainHandler.removeCallbacks(it) }
-
-                if (!isVolumeUpLongPressTriggered) {
                     val now = SystemClock.elapsedRealtime()
-                    if (now - lastVolumeUpTapTime >= 350L) {
-                        lastVolumeUpTapTime = now
-                        executePrimaryModeAction()
+                    if (now - lastVolumeUpTapTime < 250L) {
+                        return true
+                    }
+                    lastVolumeUpTapTime = now
+
+                    Log.i(tag, "Volume UP pressed -> Activating Voice Assistant")
+                    ttsManager.stop()
+                    hapticManager.vibrateClick()
+
+                    val voiceEnabled = prefs.getBoolean(keyVoiceCommands, true)
+                    if (voiceEnabled) {
+                        runOnUiThread {
+                            binding.voiceAssistantOverlay.visibility = View.VISIBLE
+                            binding.txtVoiceStatus.text = "Listening... Speak now"
+                            binding.txtModeStatus.text = "🎤 Listening..."
+                        }
+                        voiceCommandManager.startListening()
+                    } else {
+                        Toast.makeText(this, "Voice commands are disabled in Settings", Toast.LENGTH_SHORT).show()
                     }
                 }
+                return true
+            } else if (action == KeyEvent.ACTION_UP) {
+                // Dedicated to Voice Assistant — do not trigger capture or mode changes on Volume UP
+                return true
             }
             return true
         }
 
         if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
             if (action == KeyEvent.ACTION_DOWN) {
-                if (ttsManager.isSpeaking) {
-                    stopSpeech()
-                    return true
-                }
-
-                val now = SystemClock.elapsedRealtime()
-                if (now - lastVolumeDownTapTime < 350L) {
-                    return true
-                }
-                lastVolumeDownTapTime = now
-
-                if (now - lastVolumeDownClickTime < 600L) {
-                    volumeDownClickCount++
-                } else {
-                    volumeDownClickCount = 1
-                }
-                lastVolumeDownClickTime = now
-
-                // 4-click Volume DOWN triggers Emergency SOS
-                if (volumeDownClickCount >= 4) {
-                    volumeDownClickCount = 0
-                    sosManager.triggerEmergencySos { _, msg ->
-                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                if (event.repeatCount == 0) {
+                    if (ttsManager.isSpeaking) {
+                        stopSpeech()
+                        return true
                     }
-                    return true
-                }
 
-                triggerSceneSummary()
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastVolumeDownTapTime < 250L) {
+                        return true
+                    }
+                    lastVolumeDownTapTime = now
+
+                    if (now - lastVolumeDownClickTime < 600L) {
+                        volumeDownClickCount++
+                    } else {
+                        volumeDownClickCount = 1
+                    }
+                    lastVolumeDownClickTime = now
+
+                    // 4-click Volume DOWN triggers Emergency SOS
+                    if (volumeDownClickCount >= 4) {
+                        volumeDownClickCount = 0
+                        sosManager.triggerEmergencySos { _, msg ->
+                            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                        }
+                        return true
+                    }
+
+                    triggerSceneSummary()
+                }
+                return true
+            } else if (action == KeyEvent.ACTION_UP) {
+                return true
             }
             return true
         }
