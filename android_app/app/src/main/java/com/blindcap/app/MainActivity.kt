@@ -94,6 +94,9 @@ class MainActivity : AppCompatActivity() {
     private val keyVoiceCommands = "pref_voice_commands"
     private val keyShowDebugHud = "pref_show_debug_hud"
     private val keySavedMode = "pref_saved_mode"
+    private val keyVideoSource = "pref_video_source"
+    private val keyStreamUrl = "esp32_stream_url"
+    private val defaultStreamUrl = "http://192.168.4.1:81/stream"
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var prefs: SharedPreferences
@@ -217,20 +220,21 @@ class MainActivity : AppCompatActivity() {
         binding.overlayView.showDebugHud = prefs.getBoolean(keyShowDebugHud, false)
 
         mjpegStreamReader = MjpegStreamReader(
+            context = this,
             onFrameReceived = { bitmap ->
                 if (currentSource == VideoInputSource.ESP32_CAM) {
                     measureCameraFps()
                     runOnUiThread {
                         binding.esp32StreamView.setImageBitmap(bitmap)
                     }
-                    if (latestFrameRef.get() == null) {
-                        latestFrameRef.set(bitmap)
-                    }
+                    latestFrameRef.set(bitmap)
                 }
             },
             onStatusChanged = { status ->
                 runOnUiThread {
-                    binding.txtSourceBadge.text = "ESP32: $status"
+                    if (currentSource == VideoInputSource.ESP32_CAM) {
+                        binding.txtSourceBadge.text = "🧢 $status"
+                    }
                 }
             }
         )
@@ -239,6 +243,11 @@ class MainActivity : AppCompatActivity() {
         setupTopBarControls()
         setupBottomControls()
         startAiWorkerLoop()
+
+        // Initialize video source from saved preference
+        val isPhone = prefs.getBoolean(keyVideoSource, true)
+        val initialSource = if (isPhone) VideoInputSource.PHONE_CAMERA else VideoInputSource.ESP32_CAM
+        setVideoInputSource(initialSource, announce = false)
 
         val isSeparateEnabled = prefs.getBoolean(keySeparateModes, false)
         if (isSeparateEnabled) {
@@ -257,6 +266,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         requestRequiredPermissions()
+        handleIncomingIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("open_face_enroll", false) == true) {
+            mainHandler.postDelayed({
+                showFaceEnrollDialog()
+            }, 300L)
+        }
     }
 
     override fun onResume() {
@@ -269,7 +293,87 @@ class MainActivity : AppCompatActivity() {
         } else if (isSeparate && currentMode == AppDetectionMode.COMBINED) {
             setDetectionMode(AppDetectionMode.OBJECT_DETECTION_ONLY, announce = false)
         }
+
+        val isPhonePref = prefs.getBoolean(keyVideoSource, true)
+        val targetSource = if (isPhonePref) VideoInputSource.PHONE_CAMERA else VideoInputSource.ESP32_CAM
+        if (targetSource != currentSource) {
+            setVideoInputSource(targetSource, announce = true)
+        } else if (currentSource == VideoInputSource.ESP32_CAM) {
+            // Refresh URL in case it changed in Settings
+            val url = prefs.getString(keyStreamUrl, defaultStreamUrl) ?: defaultStreamUrl
+            if (url != mjpegStreamReader.currentUrl) {
+                mjpegStreamReader.start(url)
+            }
+        }
+
         updateCarouselUi()
+    }
+
+    private fun setVideoInputSource(source: VideoInputSource, announce: Boolean = true) {
+        currentSource = source
+        hapticManager.vibrateClick()
+
+        if (source == VideoInputSource.ESP32_CAM) {
+            prefs.edit().putBoolean(keyVideoSource, false).apply()
+            binding.txtSourceBadge.text = "🧢 ESP32: Connecting..."
+            binding.viewFinder.visibility = View.GONE
+            binding.esp32StreamView.visibility = View.VISIBLE
+
+            // Unbind phone camera preview to conserve power
+            try {
+                cameraProvider?.unbindAll()
+            } catch (_: Exception) {}
+
+            val streamUrl = prefs.getString(keyStreamUrl, defaultStreamUrl) ?: defaultStreamUrl
+            mjpegStreamReader.start(streamUrl)
+
+            if (announce) {
+                ttsManager.speak("Switched to ESP32 smart cap camera.", priority = 70, severity = "INFO")
+                Toast.makeText(this, "ESP32 Stream: $streamUrl", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            prefs.edit().putBoolean(keyVideoSource, true).apply()
+            binding.txtSourceBadge.text = "📱 Phone"
+            binding.esp32StreamView.visibility = View.GONE
+            binding.viewFinder.visibility = View.VISIBLE
+
+            mjpegStreamReader.stop()
+            startCamera()
+
+            if (announce) {
+                ttsManager.speak("Switched to Phone camera.", priority = 70, severity = "INFO")
+                Toast.makeText(this, "Phone Camera Active", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun showEsp32ConfigDialog() {
+        hapticManager.vibrateClick()
+        val currentUrl = prefs.getString(keyStreamUrl, defaultStreamUrl) ?: defaultStreamUrl
+        val input = EditText(this).apply {
+            setText(currentUrl)
+            setSelection(text.length)
+            hint = "192.168.4.1 or http://192.168.4.1:81/stream"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("ESP32-CAM Stream IP / URL")
+            .setMessage("Enter the IP address or stream URL of your ESP32-CAM:\n\nDefault AP: 192.168.4.1:81\nDefault Stream: http://192.168.4.1:81/stream")
+            .setView(input)
+            .setPositiveButton("Connect") { _, _ ->
+                val rawInput = input.text.toString().trim()
+                val normalized = MjpegStreamReader.normalizeStreamUrl(rawInput)
+                prefs.edit().putString(keyStreamUrl, normalized).apply()
+                hapticManager.vibrateClick()
+                Toast.makeText(this, "Connecting to: $normalized", Toast.LENGTH_LONG).show()
+                ttsManager.speak("Connecting to ESP32.", priority = 70, severity = "INFO")
+                setVideoInputSource(VideoInputSource.ESP32_CAM, announce = false)
+            }
+            .setNeutralButton("Switch to Phone") { _, _ ->
+                setVideoInputSource(VideoInputSource.PHONE_CAMERA, announce = true)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun requestRequiredPermissions() {
@@ -285,7 +389,9 @@ class MainActivity : AppCompatActivity() {
         if (needed.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, needed.toTypedArray(), appPermissionsCode)
         } else {
-            startCamera()
+            if (currentSource == VideoInputSource.PHONE_CAMERA) {
+                startCamera()
+            }
         }
     }
 
@@ -330,6 +436,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processAiFrame(bitmap: Bitmap) {
+        if (bitmap.isRecycled) return
+
         val detections = detector.detect(bitmap)
         currentDetections = detections
 
@@ -355,9 +463,11 @@ class MainActivity : AppCompatActivity() {
                 lastFaceScanTime = now
                 faceExecutor.execute {
                     try {
-                        val faces = faceRecognitionManager.detectAndRecognizeFaces(bitmap)
-                        activeRecognizedFaces.set(faces)
-                        updateFaceEnrollmentDialogStatus(faces.isNotEmpty())
+                        if (!bitmap.isRecycled) {
+                            val faces = faceRecognitionManager.detectAndRecognizeFaces(bitmap)
+                            activeRecognizedFaces.set(faces)
+                            updateFaceEnrollmentDialogStatus(faces.isNotEmpty())
+                        }
                     } catch (e: Exception) {
                         Log.e(tag, "Face scan error: ${e.message}", e)
                     } finally {
@@ -541,7 +651,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val bitmap = latestBitmap
-            if (bitmap == null) {
+            if (bitmap == null || bitmap.isRecycled) {
                 Toast.makeText(this, "Camera not ready yet", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
@@ -804,7 +914,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun triggerCurrencyScan() {
         val bitmap = latestBitmap
-        if (bitmap == null) {
+        if (bitmap == null || bitmap.isRecycled) {
             ttsManager.speak("Camera initializing. Please hold banknote in front of camera.", priority = 70, severity = "INFO")
             return
         }
@@ -823,7 +933,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun triggerColorDetection() {
         val bitmap = latestBitmap
-        if (bitmap == null) {
+        if (bitmap == null || bitmap.isRecycled) {
             ttsManager.speak("Camera initializing. Point camera at colored surface.", priority = 70, severity = "INFO")
             return
         }
@@ -841,7 +951,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun triggerBarcodeScan() {
         val bitmap = latestBitmap
-        if (bitmap == null) {
+        if (bitmap == null || bitmap.isRecycled) {
             ttsManager.speak("Camera initializing. Align barcode in front of camera.", priority = 70, severity = "INFO")
             return
         }
@@ -881,7 +991,7 @@ class MainActivity : AppCompatActivity() {
 
         lastOcrRequestTime = now
         val bitmap = latestBitmap
-        if (bitmap == null) {
+        if (bitmap == null || bitmap.isRecycled) {
             isOcrProcessing.set(false)
             ttsManager.speak("Video source initializing. Please wait.", priority = 70, severity = "INFO")
             return
@@ -971,7 +1081,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupTopBarControls() {
-        updateSourceUi()
+        // Fast 1-Click Video Source Toggle (Phone Camera <-> ESP32 Smart Cap)
+        binding.txtSourceBadge.setOnClickListener {
+            val nextSource = if (currentSource == VideoInputSource.PHONE_CAMERA) {
+                VideoInputSource.ESP32_CAM
+            } else {
+                VideoInputSource.PHONE_CAMERA
+            }
+            setVideoInputSource(nextSource, announce = true)
+        }
+
+        // Long press opens IP / Stream URL dialog directly
+        binding.txtSourceBadge.setOnLongClickListener {
+            showEsp32ConfigDialog()
+            true
+        }
 
         binding.btnSettings.setOnClickListener {
             hapticManager.vibrateClick()
@@ -1117,18 +1241,6 @@ class MainActivity : AppCompatActivity() {
             currentAiFps = (aiFrameCount * 1000f) / elapsed
             aiFrameCount = 0
             lastAiFpsTime = now
-        }
-    }
-
-    private fun updateSourceUi() {
-        if (currentSource == VideoInputSource.PHONE_CAMERA) {
-            binding.txtSourceBadge.text = "📱 Phone"
-            binding.viewFinder.visibility = View.VISIBLE
-            binding.esp32StreamView.visibility = View.GONE
-        } else {
-            binding.txtSourceBadge.text = "🧢 ESP32"
-            binding.viewFinder.visibility = View.GONE
-            binding.esp32StreamView.visibility = View.VISIBLE
         }
     }
 

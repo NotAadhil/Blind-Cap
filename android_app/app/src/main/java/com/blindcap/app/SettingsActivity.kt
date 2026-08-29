@@ -157,19 +157,20 @@ class SettingsActivity : AppCompatActivity() {
         val input = EditText(this).apply {
             setText(currentUrl)
             setSelection(text.length)
-            hint = "http://192.168.4.1:81/stream"
+            hint = "192.168.4.1 or http://192.168.4.1:81/stream"
         }
 
         AlertDialog.Builder(this)
-            .setTitle("ESP32-CAM Stream URL")
-            .setMessage("Enter the MJPEG stream URL of your ESP32-CAM headwear:")
+            .setTitle("ESP32-CAM Stream IP / URL")
+            .setMessage("Enter the IP address or stream URL of your ESP32-CAM headwear:\n\nDefault AP: 192.168.4.1:81\nDefault Stream: http://192.168.4.1:81/stream")
             .setView(input)
             .setPositiveButton("Save") { _, _ ->
-                val newUrl = input.text.toString().trim()
-                if (newUrl.isNotEmpty()) {
-                    prefs.edit().putString(keyStreamUrl, newUrl).apply()
-                    Toast.makeText(this, "Saved: $newUrl", Toast.LENGTH_SHORT).show()
-                }
+                val raw = input.text.toString().trim()
+                val normalized = com.blindcap.app.net.MjpegStreamReader.normalizeStreamUrl(raw)
+                prefs.edit().putString(keyStreamUrl, normalized).apply()
+                hapticManager.vibrateClick()
+                Toast.makeText(this, "Saved: $normalized", Toast.LENGTH_SHORT).show()
+                ttsManager.speak("ESP32 stream URL updated.", priority = 60, severity = "INFO")
             }
             .setNegativeButton("Cancel", null)
             .show()
