@@ -4,8 +4,16 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:background="#1C1B1F"
+    android:background="#1C2025"
     android:padding="20dp">
+
+    <!-- Top Drag Handle -->
+    <View
+        android:layout_width="36dp"
+        android:layout_height="4dp"
+        android:layout_gravity="center_horizontal"
+        android:background="#4D8A93A0"
+        android:layout_marginBottom="16dp" />
 
     <TextView
         android:layout_width="wrap_content"
@@ -19,28 +27,30 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Select an on-demand assistive tool to analyze the current view:"
-        android:textColor="#CAC4D0"
+        android:text="Select an AI tool to analyze the current camera view:"
+        android:textColor="#9EABB8"
         android:textSize="13sp"
         android:paddingBottom="16dp" />
 
-    <!-- Tool 1: Face Enrollment & Contacts -->
+    <!-- Tool 1: Face Recognition & Enrolment -->
     <LinearLayout
         android:id="@+id/cardToolFaceEnroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:background="@drawable/card_mode_bg"
+        android:background="@drawable/card_pixel_tool"
         android:padding="16dp"
-        android:layout_marginBottom="12dp">
+        android:layout_marginBottom="10dp">
 
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Face"
-            android:textSize="28sp"
-            android:paddingEnd="16dp" />
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:background="@drawable/bg_voice_chip"
+            android:text="👤"
+            android:textSize="22sp"
+            android:layout_marginEnd="14dp" />
 
         <LinearLayout
             android:layout_width="0dp"
@@ -51,7 +61,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Face Enrolment &amp; Contacts"
+                android:text="Face Recognition"
                 android:textColor="#FF80AB"
                 android:textSize="16sp"
                 android:textStyle="bold" />
@@ -59,29 +69,31 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Register faces directly on camera or manage known contacts."
-                android:textColor="#CAC4D0"
+                android:text="Identify known people or enroll new face contacts."
+                android:textColor="#9EABB8"
                 android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Tool 2: Currency -->
+    <!-- Tool 2: Currency / Banknote Reader -->
     <LinearLayout
         android:id="@+id/cardToolCurrency"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:background="@drawable/card_mode_bg"
+        android:background="@drawable/card_pixel_tool"
         android:padding="16dp"
-        android:layout_marginBottom="12dp">
+        android:layout_marginBottom="10dp">
 
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Note"
-            android:textSize="28sp"
-            android:paddingEnd="16dp" />
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:background="@drawable/bg_voice_chip"
+            android:text="💵"
+            android:textSize="22sp"
+            android:layout_marginEnd="14dp" />
 
         <LinearLayout
             android:layout_width="0dp"
@@ -92,7 +104,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Indian Rupee Cash Reader"
+                android:text="Indian Rupee Banknote Reader"
                 android:textColor="#00FFCC"
                 android:textSize="16sp"
                 android:textStyle="bold" />
@@ -100,29 +112,31 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Identifies ₹10, ₹20, ₹50, ₹100, ₹200, ₹500 banknotes."
-                android:textColor="#CAC4D0"
+                android:text="Scans ₹10, ₹20, ₹50, ₹100, ₹200, and ₹500 notes."
+                android:textColor="#9EABB8"
                 android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Tool 3: Color & Light -->
+    <!-- Tool 3: Color & Light Detector -->
     <LinearLayout
         android:id="@+id/cardToolColor"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:background="@drawable/card_mode_bg"
+        android:background="@drawable/card_pixel_tool"
         android:padding="16dp"
-        android:layout_marginBottom="12dp">
+        android:layout_marginBottom="10dp">
 
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Color"
-            android:textSize="28sp"
-            android:paddingEnd="16dp" />
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:background="@drawable/bg_voice_chip"
+            android:text="🎨"
+            android:textSize="22sp"
+            android:layout_marginEnd="14dp" />
 
         <LinearLayout
             android:layout_width="0dp"
@@ -141,29 +155,31 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Names the color in center view and reports room brightness."
-                android:textColor="#CAC4D0"
+                android:text="Names the centered color and reports ambient brightness."
+                android:textColor="#9EABB8"
                 android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Tool 4: Barcode & QR -->
+    <!-- Tool 4: Barcode & QR Product Scanner -->
     <LinearLayout
         android:id="@+id/cardToolBarcode"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:background="@drawable/card_mode_bg"
+        android:background="@drawable/card_pixel_tool"
         android:padding="16dp"
         android:layout_marginBottom="16dp">
 
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Code"
-            android:textSize="28sp"
-            android:paddingEnd="16dp" />
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:gravity="center"
+            android:background="@drawable/bg_voice_chip"
+            android:text="🏷️"
+            android:textSize="22sp"
+            android:layout_marginEnd="14dp" />
 
         <LinearLayout
             android:layout_width="0dp"
@@ -183,7 +199,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Scans grocery barcodes, medicines, and QR codes."
-                android:textColor="#CAC4D0"
+                android:textColor="#9EABB8"
                 android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
@@ -193,7 +209,7 @@
         android:layout_width="match_parent"
         android:layout_height="48dp"
         android:text="Close"
-        android:backgroundTint="#333333"
+        android:backgroundTint="#343A40"
         android:textColor="#FFFFFF" />
 
 </LinearLayout>

@@ -39,7 +39,7 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- LAYER 3: Minimalist Center Reticle Focus Ring -->
+    <!-- LAYER 3: Minimalist Pixel Center Reticle Focus Ring -->
     <View
         android:id="@+id/centerReticle"
         android:layout_width="56dp"
@@ -50,38 +50,40 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
-    <!-- TOP CONTROL BAR: Settings Gear + Face Enrolment + Mode Badge + Source Badge -->
+    <!-- TOP FLOATING PILL BAR (Google Pixel Camera Style) -->
     <LinearLayout
         android:id="@+id/topBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:paddingTop="36dp"
-        android:paddingHorizontal="16dp"
+        android:layout_marginTop="32dp"
+        android:layout_marginHorizontal="16dp"
+        android:background="@drawable/bg_pixel_top_pill"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="6dp"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
         <ImageButton
             android:id="@+id/btnSettings"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:background="@drawable/circle_btn_bg"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_settings"
             android:contentDescription="Open Settings"
-            app:tint="#FFFFFF"
-            android:layout_marginEnd="8dp" />
+            app:tint="#FFFFFF" />
 
         <ImageButton
             android:id="@+id/btnFaceManager"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:background="@drawable/circle_btn_bg"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_tools"
             android:contentDescription="Manage Face Contacts"
             app:tint="#FF80AB"
-            android:layout_marginEnd="8dp" />
+            android:layout_marginStart="4dp" />
 
         <TextView
             android:id="@+id/txtModeStatus"
@@ -91,41 +93,39 @@
             android:gravity="center"
             android:text="COMBINED MODE"
             android:textColor="#E6E1E5"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textStyle="bold"
-            android:letterSpacing="0.08"
-            android:shadowColor="#80000000"
-            android:shadowDx="1"
-            android:shadowDy="1"
-            android:shadowRadius="3" />
+            android:letterSpacing="0.06"
+            android:paddingHorizontal="8dp" />
 
         <TextView
             android:id="@+id/txtSourceBadge"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:background="@drawable/circle_btn_bg"
+            android:background="@drawable/mode_pill_unselected"
             android:text="Phone Camera"
             android:textColor="#00FFCC"
-            android:textSize="12sp"
+            android:textSize="11sp"
             android:textStyle="bold"
             android:paddingHorizontal="12dp"
-            android:paddingVertical="8dp" />
+            android:paddingVertical="6dp" />
     </LinearLayout>
 
-    <!-- BOTTOM CAMERA CONTROLS -->
+    <!-- BOTTOM PIXEL CAMERA CONTROL ISLAND -->
     <LinearLayout
         android:id="@+id/bottomControlsLayout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:gravity="center_horizontal"
-        android:paddingBottom="52dp"
-        android:background="#4D000000"
+        android:paddingTop="18dp"
+        android:paddingBottom="42dp"
+        android:background="@drawable/bg_pixel_bottom_bar"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent">
 
-        <!-- Dynamic Mode Carousel -->
+        <!-- Dynamic Mode Carousel (Stock Pixel Camera Style) -->
         <HorizontalScrollView
             android:id="@+id/modeCarouselScroll"
             android:layout_width="match_parent"
@@ -154,8 +154,8 @@
                     android:textStyle="bold"
                     android:background="@drawable/mode_pill_selected"
                     android:paddingHorizontal="16dp"
-                    android:paddingVertical="8dp"
-                    android:layout_marginHorizontal="6dp" />
+                    android:paddingVertical="7dp"
+                    android:layout_marginHorizontal="4dp" />
 
                 <TextView
                     android:id="@+id/btnPillObjectNav"
@@ -169,8 +169,8 @@
                     android:textStyle="bold"
                     android:background="@drawable/mode_pill_unselected"
                     android:paddingHorizontal="16dp"
-                    android:paddingVertical="8dp"
-                    android:layout_marginHorizontal="6dp"
+                    android:paddingVertical="7dp"
+                    android:layout_marginHorizontal="4dp"
                     android:visibility="gone" />
 
                 <TextView
@@ -185,8 +185,8 @@
                     android:textStyle="bold"
                     android:background="@drawable/mode_pill_unselected"
                     android:paddingHorizontal="16dp"
-                    android:paddingVertical="8dp"
-                    android:layout_marginHorizontal="6dp"
+                    android:paddingVertical="7dp"
+                    android:layout_marginHorizontal="4dp"
                     android:visibility="gone" />
 
                 <TextView
@@ -201,8 +201,8 @@
                     android:textStyle="bold"
                     android:background="@drawable/mode_pill_unselected"
                     android:paddingHorizontal="16dp"
-                    android:paddingVertical="8dp"
-                    android:layout_marginHorizontal="6dp"
+                    android:paddingVertical="7dp"
+                    android:layout_marginHorizontal="4dp"
                     android:visibility="gone" />
 
                 <TextView
@@ -217,8 +217,8 @@
                     android:textStyle="bold"
                     android:background="@drawable/mode_pill_unselected"
                     android:paddingHorizontal="16dp"
-                    android:paddingVertical="8dp"
-                    android:layout_marginHorizontal="6dp"
+                    android:paddingVertical="7dp"
+                    android:layout_marginHorizontal="4dp"
                     android:visibility="gone" />
 
                 <TextView
@@ -233,57 +233,58 @@
                     android:textStyle="bold"
                     android:background="@drawable/mode_pill_unselected"
                     android:paddingHorizontal="16dp"
-                    android:paddingVertical="8dp"
-                    android:layout_marginHorizontal="6dp"
+                    android:paddingVertical="7dp"
+                    android:layout_marginHorizontal="4dp"
                     android:visibility="gone" />
 
             </LinearLayout>
         </HorizontalScrollView>
 
-        <!-- Primary Action Row: Scene Summary | Large Shutter | Tools -->
+        <!-- Primary Shutter Action Row (Google Pixel Camera Style) -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:paddingHorizontal="32dp">
+            android:paddingHorizontal="36dp">
 
+            <!-- Left Button: Quick Inspect / Scene Summary -->
             <ImageButton
                 android:id="@+id/btnSceneSummary"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:background="@drawable/circle_btn_bg"
+                android:layout_width="54dp"
+                android:layout_height="54dp"
+                android:background="@drawable/bg_pixel_circle_btn"
                 android:src="@drawable/ic_scene"
                 android:contentDescription="Scene Summary"
-                app:tint="#FFFFFF" />
+                app:tint="#E0E6ED" />
 
             <View
                 android:layout_width="0dp"
                 android:layout_height="1dp"
                 android:layout_weight="1" />
 
+            <!-- Center Large Shutter Button (Stock Pixel Camera Shutter) -->
             <ImageButton
                 android:id="@+id/btnShutter"
-                android:layout_width="76dp"
-                android:layout_height="76dp"
+                android:layout_width="82dp"
+                android:layout_height="82dp"
                 android:background="@drawable/shutter_button_bg"
-                android:src="@drawable/ic_camera"
-                android:contentDescription="Primary Shutter Action"
-                app:tint="#1F2421" />
+                android:contentDescription="Primary Camera Shutter" />
 
             <View
                 android:layout_width="0dp"
                 android:layout_height="1dp"
                 android:layout_weight="1" />
 
+            <!-- Right Button: Assistant Tools -->
             <ImageButton
                 android:id="@+id/btnTools"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
-                android:background="@drawable/circle_btn_bg"
+                android:layout_width="54dp"
+                android:layout_height="54dp"
+                android:background="@drawable/bg_pixel_circle_btn"
                 android:src="@drawable/ic_tools"
                 android:contentDescription="Open Assistant Tools"
-                app:tint="#FFFFFF" />
+                app:tint="#E0E6ED" />
 
         </LinearLayout>
     </LinearLayout>
@@ -324,8 +325,8 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_gravity="center"
-                    android:text="MIC"
-                    android:textSize="38sp" />
+                    android:text="🎙️"
+                    android:textSize="36sp" />
             </FrameLayout>
 
             <TextView
@@ -345,7 +346,7 @@
                 android:layout_height="wrap_content"
                 android:text="Speak: 'What color is this', 'What note is this', 'Describe scene', or 'Read text'"
                 android:textColor="#E0E6ED"
-                android:textSize="15sp"
+                android:textSize="14sp"
                 android:gravity="center"
                 android:lineSpacingExtra="4dp"
                 android:layout_marginBottom="18dp" />
@@ -381,7 +382,7 @@
                     android:textStyle="bold" />
             </LinearLayout>
 
-            <!-- Quick Suggestions Row -->
+            <!-- Quick Suggestions Row with Tasteful Minimal Emojis -->
             <HorizontalScrollView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -400,7 +401,7 @@
                         android:background="@drawable/bg_voice_chip"
                         android:paddingHorizontal="14dp"
                         android:paddingVertical="8dp"
-                        android:text="Color"
+                        android:text="🎨 Color"
                         android:textColor="#FFFFFF"
                         android:textSize="13sp"
                         android:layout_marginEnd="8dp" />
@@ -412,7 +413,7 @@
                         android:background="@drawable/bg_voice_chip"
                         android:paddingHorizontal="14dp"
                         android:paddingVertical="8dp"
-                        android:text="Banknote"
+                        android:text="💵 Banknote"
                         android:textColor="#FFFFFF"
                         android:textSize="13sp"
                         android:layout_marginEnd="8dp" />
@@ -424,7 +425,7 @@
                         android:background="@drawable/bg_voice_chip"
                         android:paddingHorizontal="14dp"
                         android:paddingVertical="8dp"
-                        android:text="Scene"
+                        android:text="👁️ Scene"
                         android:textColor="#FFFFFF"
                         android:textSize="13sp"
                         android:layout_marginEnd="8dp" />
@@ -436,7 +437,7 @@
                         android:background="@drawable/bg_voice_chip"
                         android:paddingHorizontal="14dp"
                         android:paddingVertical="8dp"
-                        android:text="Read Text"
+                        android:text="📖 Read Text"
                         android:textColor="#FFFFFF"
                         android:textSize="13sp"
                         android:layout_marginEnd="8dp" />
@@ -448,7 +449,7 @@
                         android:background="@drawable/bg_voice_chip"
                         android:paddingHorizontal="14dp"
                         android:paddingVertical="8dp"
-                        android:text="Barcode"
+                        android:text="🏷️ Barcode"
                         android:textColor="#FFFFFF"
                         android:textSize="13sp" />
                 </LinearLayout>

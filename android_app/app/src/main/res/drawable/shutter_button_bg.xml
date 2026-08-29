@@ -1,27 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
 <ripple xmlns:android="http://schemas.android.com/apk/res/android"
-    android:color="#44FFFFFF">
+    android:color="#4DFFFFFF">
     <item>
         <layer-list>
-            <!-- Outer Ring -->
+            <!-- Outer Ring (Stock Pixel Camera 4dp Ring) -->
             <item>
                 <shape android:shape="oval">
                     <stroke
-                        android:width="4dp"
+                        android:width="4.5dp"
                         android:color="#FFFFFFFF" />
                     <solid android:color="#00000000" />
                     <size
-                        android:width="76dp"
-                        android:height="76dp" />
+                        android:width="80dp"
+                        android:height="80dp" />
                 </shape>
             </item>
-            <!-- Inner Solid Shutter -->
+            <!-- Inner Solid Shutter Disc -->
             <item
                 android:bottom="8dp"
                 android:left="8dp"
                 android:right="8dp"
                 android:top="8dp">
                 <shape android:shape="oval">
-                    <solid android:color="#E2E3DE" />
+                    <solid android:color="#FFFFFFFF" />
+                    <stroke
+                        android:width="1dp"
+                        android:color="#E0E0E0" />
                 </shape>
             </item>
         </layer-list>
