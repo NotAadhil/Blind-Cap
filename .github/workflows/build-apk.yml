@@ -1,4 +1,4 @@
-﻿name: Build and Release Android APK
+name: Build and Release Android APK
 
 on:
   push:
@@ -109,7 +109,7 @@ jobs:
           body: |
             ## Oculus AI Mobile Android App - Verified Stable Release
             - **Status**: Verified Functional Baseline (Object Detection, Spatial Walking Corridor, Metric Depth, Face Recognition, OCR).
-            - **Target Device**: Google Pixel 6a & Standard Android ARM64 Devices.
+            - **Target Device**: All Modern Android Devices (ARM64 & ARMv7a, Android 8.0+).
             - **Engine**: 100% On-Device Offline Edge AI (YOLO 320x320 XNNPACK 4-Thread SIMD + MobileFaceNet 192D + Google ML Kit).
             - **Installation**: Download `app-debug.apk` below for 1-click installation.
           files: |

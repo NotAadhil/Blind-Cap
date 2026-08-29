@@ -230,11 +230,11 @@ Official Ultralytics YOLO26n TFLite Integration with 80 COCO Classes.
 ## [v1.0.10] - 2026-08-22
 
 ### Summary
-Direct FloatBuffer Output Memory Management and Pixel Tensor G1 Tuning.
+Direct FloatBuffer Output Memory Management and ARM64 Chipset Tuning.
 
 ### Fixes & Enhancements
-- Resolved buffer copy latency on Google Pixel 6a (Google Tensor G1 chip).
-- Tuned multi-threading options for Cortex-X1 big cores.
+- Resolved buffer copy latency on Android ARM64 chipsets.
+- Tuned multi-threading options for high-performance big cores.
 
 ---
 
